@@ -1,0 +1,5 @@
+{
+  "name": "status",
+  "version": "1.0.0",
+  "description": "Reports uptime, loaded modules, and the requester's role."
+}

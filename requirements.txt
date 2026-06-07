@@ -1,0 +1,10 @@
+# OctoOps runtime dependencies (pinned)
+python-telegram-bot>=21,<22
+aiohttp>=3.9,<4
+apscheduler>=3.10,<4          # 4.x is alpha; spec's Scheduler API is wrapped over stable 3.x
+tomlkit>=0.12                 # config writing (reading uses stdlib tomllib)
+textual>=0.60                 # setup wizard TUI
+structlog>=24.1
+# Windows-only deploy extras (no-ops on Linux/macOS dev machines)
+tzdata; sys_platform == "win32"
+pywin32; sys_platform == "win32"

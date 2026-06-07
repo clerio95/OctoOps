@@ -1,0 +1,59 @@
+# Copy to config.toml and fill in. The Stage 3 wizard will generate this for you.
+
+[telegram]
+bot_token = "123456:ABC-REPLACE_ME"
+admin_chat_id = "123456789"          # chat that receives startup/error notifications
+
+[transport]
+# WhatsApp is optional, output-only. Set false for a Telegram-only deployment:
+# the bridge sidecar and callback server are then never started.
+whatsapp_enabled = true
+whatsapp_bridge_path = "./whatsmeow-bridge.exe"
+whatsapp_bridge_port = 3000
+octoops_callback_port = 3001
+# Optional inbound: let whitelisted WhatsApp numbers message the embedded brain.
+# Off by default — WhatsApp stays output-only. When on, every inbound message
+# from an allowed number is routed to ONE command (whatsapp_command), so a
+# WhatsApp user can only ever reach the brain — never any other command.
+whatsapp_inbound_enabled = false
+whatsapp_allow = []                  # allowed numbers, e.g. ["5511999998888"]
+whatsapp_command = "ask"             # the single command inbound text is routed to
+whatsapp_role = "operator"           # role inbound WhatsApp users are treated as
+
+[core]
+timezone = "America/Sao_Paulo"
+allowed_user_ids = ["123456789"]     # Telegram user IDs allowed to use the bot
+operator_user_ids = []
+admin_user_ids = ["123456789"]
+default_role = "viewer"
+log_file = "./logs/octoops.log"
+log_max_bytes = 10_000_000
+
+[mcp]
+# Optional MCP server (a second control plane) — off by default.
+enabled = false
+host = "127.0.0.1"
+port = 3002
+service_role = "viewer"              # MCP clients are treated as this role
+allow_command_execution = false      # master gate; commands also need ai_invokable
+# token = "set-a-bearer-token-to-require-auth"
+
+[modules]
+enabled = ["status", "brain"]        # module folder names that are active
+
+# Per-module config sections look like:
+# [modules.my_module]
+# device_ip = "192.168.1.50"
+
+[modules.brain]
+# Embedded AI assistant: /ask <question>, grounded in a folder of context prompts.
+# Provider-agnostic via an OpenAI-compatible endpoint — one key reaches OpenRouter,
+# Google Gemini, Groq, a local Ollama, and many free-tier models.
+# The API key is NOT stored here. Enter it in the wizard (it's written to a
+# private .env beside this file, 0600) or set the BRAIN_API_KEY environment
+# variable — either keeps the secret out of config.toml and the logs.
+provider    = "openai_compat"
+base_url    = "https://openrouter.ai/api/v1"
+model       = "google/gemini-2.0-flash-exp:free"
+prompts_dir = "data/brain/prompts"   # drop .md/.txt context files here (base-dir-relative)
+max_tokens  = 1024

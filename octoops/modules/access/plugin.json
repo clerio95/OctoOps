@@ -1,0 +1,5 @@
+{
+  "name": "access",
+  "version": "1.0.0",
+  "description": "Manage who can use the bot — list users and grant/revoke roles at runtime."
+}

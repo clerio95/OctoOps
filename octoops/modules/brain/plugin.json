@@ -1,0 +1,5 @@
+{
+  "name": "brain",
+  "version": "1.0.0",
+  "description": "Ask an embedded AI assistant, grounded in a folder of context prompts. Provider-agnostic via an OpenAI-compatible endpoint."
+}

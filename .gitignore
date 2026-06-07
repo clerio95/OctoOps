@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+config.toml
+config.toml.*.bak
+.env
+*.bak
+.DS_Store
+logs/*.log*
+data/*
+!data/.gitkeep
+whatsmeow-bridge
+whatsmeow-bridge.exe
