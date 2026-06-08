@@ -8,6 +8,7 @@ from octoops.wizard.state import validate_bot_token, validate_chat_id
 from octoops.wizard.telegram_pairing import (
     BotAlreadyRunningError,
     TelegramApi,
+    VerifyNetworkError,
     make_start_link,
     new_nonce,
     verify_token,
@@ -58,9 +59,15 @@ class TelegramStep(BaseStep):
         self._status("Checking token with Telegram…")
         api = TelegramApi(token.strip())
         try:
-            identity = await verify_token(api)
+            try:
+                identity = await verify_token(api)
+            except VerifyNetworkError as exc:
+                self._status(
+                    f"✗ Could not reach Telegram — check your internet connection.\n({exc})"
+                )
+                return
             if identity is None:
-                self._status("✗ That token didn't work. Re-check it with @BotFather.")
+                self._status("✗ Token rejected by Telegram — re-check it with @BotFather.")
                 return
 
             nonce = new_nonce()

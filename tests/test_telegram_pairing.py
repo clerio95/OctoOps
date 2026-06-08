@@ -10,6 +10,7 @@ from octoops.wizard.telegram_pairing import (
     BotAlreadyRunningError,
     BotIdentity,
     StartResult,
+    VerifyNetworkError,
     _match_start,
     make_start_link,
     new_nonce,
@@ -45,9 +46,10 @@ async def test_verify_token_none_when_not_ok():
 
 
 @pytest.mark.asyncio
-async def test_verify_token_none_on_network_error():
+async def test_verify_token_raises_network_error_on_exception():
     api = _MeApi(RuntimeError("connection refused"))
-    assert await verify_token(api) is None
+    with pytest.raises(VerifyNetworkError, match="connection refused"):
+        await verify_token(api)
 
 
 # --- /start matching ----------------------------------------------------------

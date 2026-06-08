@@ -51,6 +51,7 @@ def run_wizard(config_path: str, paths: AppPaths | None = None) -> bool:
         print(f"Wrote {config_path.parent / '.env'} (module secrets, private 0600)")
 
     _maybe_register_task(state, paths)
+    _maybe_write_uninstall(paths)
     _maybe_pair_whatsapp(state, paths)
     return True
 
@@ -97,6 +98,14 @@ def _maybe_register_task(state, paths: AppPaths) -> None:
 
     ok, message = register_task(sys.executable, str(paths.home))
     print(message)
+
+
+def _maybe_write_uninstall(paths: AppPaths) -> None:
+    from octoops.wizard.task_scheduler import write_uninstall_bat
+
+    bat = write_uninstall_bat(paths.home)
+    if bat is not None:
+        print(f"Wrote {bat}")
 
 
 def _maybe_pair_whatsapp(state, paths: AppPaths) -> None:

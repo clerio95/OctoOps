@@ -17,6 +17,27 @@ from xml.sax.saxutils import escape
 TASK_NAME = "OctoOps"
 _SYSTEM_SID = "S-1-5-18"  # NT AUTHORITY\SYSTEM
 
+_UNINSTALL_BAT = """\
+@echo off
+setlocal
+echo OctoOps Uninstaller
+echo ====================
+echo.
+echo Removing Task Scheduler task "{task_name}"...
+schtasks /Delete /TN "{task_name}" /F 2^>nul
+if %ERRORLEVEL% == 0 (
+    echo   Task removed.
+) else (
+    echo   Task not found ^(may not have been registered^).
+)
+echo.
+echo OctoOps has been unregistered from Windows autostart.
+echo To fully remove OctoOps, delete this folder manually:
+echo   %~dp0
+echo.
+pause
+"""
+
 
 def build_task_xml(command: str, arguments: str, working_dir: str) -> str:
     """Build a Task Scheduler 1.2 XML definition for the OctoOps runtime."""
@@ -95,3 +116,12 @@ def register_task(
     if result.returncode == 0:
         return (True, f"Registered Task Scheduler task {task_name!r} (run as SYSTEM, at boot).")
     return (False, f"schtasks failed (exit {result.returncode}): {result.stderr.strip()}")
+
+
+def write_uninstall_bat(home: Path, task_name: str = TASK_NAME) -> Path | None:
+    """Write uninstall.bat to the OctoOps home directory. No-op on non-Windows."""
+    if not is_windows():
+        return None
+    bat = home / "uninstall.bat"
+    bat.write_text(_UNINSTALL_BAT.format(task_name=task_name), encoding="utf-8")
+    return bat

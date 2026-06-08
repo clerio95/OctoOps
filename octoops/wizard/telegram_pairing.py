@@ -40,6 +40,14 @@ class BotAlreadyRunningError(Exception):
     """
 
 
+class VerifyNetworkError(Exception):
+    """Raised by verify_token when the Telegram API is unreachable.
+
+    Distinct from a bad token (which returns None) so callers can show the right
+    message: "check your connection" vs "re-check with BotFather".
+    """
+
+
 class TelegramApi:
     """Minimal async client for the handful of Bot API calls the wizard needs.
 
@@ -107,15 +115,15 @@ def make_start_link(username: str, nonce: str) -> str:
 
 
 async def verify_token(api: TelegramApi) -> BotIdentity | None:
-    """Return the bot's identity if the token is valid, else None.
+    """Return the bot's identity if the token is valid, None if rejected.
 
-    Any network/parse failure is treated as "couldn't verify" — the caller shows
-    a try-again message rather than crashing the wizard.
+    Raises VerifyNetworkError when the Telegram API is unreachable so callers
+    can show "check your connection" instead of "bad token".
     """
     try:
         data = await api.get_me()
-    except Exception:  # noqa: BLE001 - any failure means "couldn't verify"
-        return None
+    except Exception as exc:  # noqa: BLE001
+        raise VerifyNetworkError(str(exc)) from exc
     if not data.get("ok"):
         return None
     result = data.get("result", {})

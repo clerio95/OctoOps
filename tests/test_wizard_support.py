@@ -33,6 +33,22 @@ def test_register_task_noop_off_windows(monkeypatch):
     assert "Windows-only" in msg
 
 
+def test_write_uninstall_bat_creates_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(ts, "is_windows", lambda: True)
+    bat = ts.write_uninstall_bat(tmp_path)
+    assert bat is not None and bat.is_file()
+    content = bat.read_text()
+    assert "schtasks /Delete" in content
+    assert ts.TASK_NAME in content
+    assert "pause" in content
+
+
+def test_write_uninstall_bat_noop_off_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(ts, "is_windows", lambda: False)
+    assert ts.write_uninstall_bat(tmp_path) is None
+    assert not (tmp_path / "uninstall.bat").exists()
+
+
 # --- module pre-scan ----------------------------------------------------------
 
 

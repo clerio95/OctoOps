@@ -8,8 +8,12 @@ exits the app with the populated WizardState (or None if cancelled).
 
 from __future__ import annotations
 
+import sys
+
+from textual import events
 from textual.app import App
 from textual.screen import Screen
+from textual.widgets import Input
 
 from octoops.core.plugin_loader import DiscoveredModule
 from octoops.wizard.screens.core_settings import CoreSettingsStep
@@ -58,7 +62,10 @@ class WizardApp(App):
     .preview { padding: 1; border: round $primary; }
     Label { padding: 1 0 0 0; }
     """
-    BINDINGS = [("escape", "cancel", "Cancel")]
+    # ctrl+c is Textual's default quit shortcut; override it here so users can
+    # press it in an Input field (e.g. to cancel a selection) without killing
+    # the wizard. Escape and the Cancel button remain the exit paths.
+    BINDINGS = [("escape", "cancel", "Cancel"), ("ctrl+c", "noop", "")]
 
     def __init__(
         self,
@@ -112,5 +119,41 @@ class WizardApp(App):
         if len(self.screen_stack) > 2:
             self.pop_screen()
 
+    def action_noop(self) -> None:
+        pass
+
     def action_cancel(self) -> None:
         self.exit(None)
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key != "ctrl+v":
+            return
+        focused = self.focused
+        if not isinstance(focused, Input):
+            return
+        text = _clipboard_paste()
+        if text:
+            focused._insert_text_at_cursor(text)
+        event.stop()
+
+
+def _clipboard_paste() -> str:
+    """Read plain text from the Windows clipboard via ctypes (no extra deps).
+    Returns an empty string on non-Windows or when the clipboard is empty."""
+    if not sys.platform.startswith("win"):
+        return ""
+    import ctypes
+
+    CF_UNICODETEXT = 13
+    try:
+        if not ctypes.windll.user32.OpenClipboard(None):
+            return ""
+        handle = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
+        return ctypes.wstring_at(handle) if handle else ""
+    except Exception:  # noqa: BLE001
+        return ""
+    finally:
+        try:
+            ctypes.windll.user32.CloseClipboard()
+        except Exception:  # noqa: BLE001
+            pass
