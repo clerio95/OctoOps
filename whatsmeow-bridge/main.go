@@ -122,7 +122,7 @@ func connectWA() {
 			switch evt.Event {
 			case "code":
 				fmt.Println("--- new QR code ---")
-				qrterminal.Generate(evt.Code, qrterminal.L, os.Stdout)
+				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 			case "success":
 				fmt.Println("Paired successfully.")
 			default:
