@@ -12,5 +12,7 @@ config.toml.*.bak
 logs/*.log*
 data/*
 !data/.gitkeep
-whatsmeow-bridge
+# Compiled bridge binaries (source lives in whatsmeow-bridge/)
 whatsmeow-bridge.exe
+whatsmeow-bridge/whatsmeow-bridge
+whatsmeow-bridge/whatsmeow-bridge.exe
