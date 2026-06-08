@@ -71,7 +71,7 @@ func main() {
 		log.Fatalf("get device: %v", err)
 	}
 
-	clientLog := waLog.Stdout("Client", "INFO", true)
+	clientLog := waLog.Stdout("Client", "DEBUG", true)
 	waClient = whatsmeow.NewClient(deviceStore, clientLog)
 	waClient.AddEventHandler(onEvent)
 
@@ -116,11 +116,13 @@ func connectWA() {
 			log.Printf("wa connect: %v", err)
 			return
 		}
-		fmt.Println("\nScan this QR code in WhatsApp → Settings → Linked Devices → Link a Device:\n")
+		fmt.Println("\nScan this QR code in WhatsApp → Settings → Linked Devices → Link a Device:")
+		fmt.Println("(QR codes refresh every ~20 s — always scan the latest one)\n")
 		for evt := range qrChan {
 			switch evt.Event {
 			case "code":
-				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				fmt.Println("--- new QR code ---")
+				qrterminal.Generate(evt.Code, qrterminal.L, os.Stdout)
 			case "success":
 				fmt.Println("Paired successfully.")
 			default:
