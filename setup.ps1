@@ -32,10 +32,16 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
 $env:Path = "C:\Program Files\Go\bin;$env:Path"
 
 # --- build whatsmeow bridge --------------------------------------------------
-if (Get-Command go -ErrorAction SilentlyContinue) {
+$bridgeSrc = "$PSScriptRoot\whatsmeow-bridge"
+if (-not (Test-Path $bridgeSrc)) {
+    Write-Warning "whatsmeow-bridge\ source folder not found - skipping bridge build."
+    Write-Warning "Ensure the full repo (including whatsmeow-bridge\) is present and re-run."
+} elseif (-not (Get-Command go -ErrorAction SilentlyContinue)) {
+    Write-Warning "Go not found - bridge not built. Install Go from https://go.dev/dl/ and re-run."
+} else {
     Write-Host "==> building whatsmeow bridge"
     try {
-        Push-Location "$PSScriptRoot\whatsmeow-bridge"
+        Push-Location $bridgeSrc
         go get go.mau.fi/whatsmeow@latest modernc.org/sqlite@latest github.com/mdp/qrterminal/v3@latest
         if ($LASTEXITCODE -ne 0) { throw "go get failed" }
         go mod tidy
@@ -49,8 +55,6 @@ if (Get-Command go -ErrorAction SilentlyContinue) {
     } finally {
         Pop-Location -ErrorAction SilentlyContinue
     }
-} else {
-    Write-Warning "Go not found — bridge not built. Install Go from https://go.dev/dl/ and re-run."
 }
 
 # --- diagnostics -------------------------------------------------------------
