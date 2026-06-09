@@ -19,7 +19,10 @@ mirroring the Telegram allowlist gate).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
+import os
+import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -99,6 +102,10 @@ class WhatsAppTransport(Transport):
         self._role = role
         self._router: "Router | None" = None
         self._registry: "Registry | None" = None
+        # Shared secret authenticating both directions of the local bridge link
+        # (OctoOps→bridge requests AND the bridge→/incoming callback). Empty until
+        # run() mints it, so direct unit tests of the handlers stay unauthenticated.
+        self._bridge_token: str = ""
 
     @property
     def name(self) -> str:
@@ -108,6 +115,10 @@ class WhatsAppTransport(Transport):
         self._running = True
         self._router = router
         self._registry = registry
+        # Mint the shared bridge secret for this process and arm the client with it;
+        # _spawn_bridge passes the same value to the sidecar via BRIDGE_TOKEN.
+        self._bridge_token = secrets.token_urlsafe(32)
+        self._client.set_auth_token(self._bridge_token)
         try:
             await self._start_callback_server()
             if self._spawn:
@@ -143,7 +154,26 @@ class WhatsAppTransport(Transport):
 
     _NOT_ROUTED = {"ok": True, "routed": False}
 
+    def _incoming_authorized(self, request: web.Request) -> bool:
+        """True if the request carries the shared bridge token (or none is set).
+
+        Only the real bridge knows the per-process token, so this rejects a local
+        attacker POSTing a spoofed (whitelisted) sender to /incoming. When the
+        token is empty (direct unit tests / pre-token bridge) auth is skipped.
+        """
+        if not self._bridge_token:
+            return True
+        expected = f"Bearer {self._bridge_token}"
+        got = request.headers.get("Authorization", "")
+        return hmac.compare_digest(got, expected)
+
     async def _handle_incoming(self, request: web.Request) -> web.Response:
+        # Reject unauthenticated callers up front (even the output-only ack path),
+        # so nothing local can drive or probe this endpoint by spoofing the bridge.
+        if not self._incoming_authorized(request):
+            _log.warning("whatsapp.incoming_unauthorized")
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
         # Default: WhatsApp is output-only. Accept and acknowledge; do not route.
         # Message bodies are never logged.
         if (
@@ -225,7 +255,14 @@ class WhatsAppTransport(Transport):
             _log.error("whatsapp.bridge_missing", path=str(path))
             return None
         try:
-            proc = await asyncio.create_subprocess_exec(str(path))
+            # Hand the sidecar the shared secret (and the configured port) via the
+            # environment; the bridge enforces the token on every endpoint.
+            env = {
+                **os.environ,
+                "BRIDGE_TOKEN": self._bridge_token,
+                "BRIDGE_PORT": str(self._bridge_port),
+            }
+            proc = await asyncio.create_subprocess_exec(str(path), env=env)
             _log.info("whatsapp.bridge_spawned", pid=proc.pid)
             return proc
         except Exception as exc:  # noqa: BLE001

@@ -18,11 +18,18 @@
 // Flags:
 //   --port  HTTP listen port (default 3000, override with BRIDGE_PORT env var)
 //   --db    SQLite session DB path (default whatsmeow.db in working dir)
+//
+// Auth:
+//   BRIDGE_TOKEN env var — when set, every endpoint requires
+//   "Authorization: Bearer <token>" and the outbound callback presents it.
+//   OctoOps mints this per process and passes it when spawning the bridge.
+//   Empty (e.g. interactive pairing) = unauthenticated, loopback only.
 package main
 
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -54,12 +61,32 @@ var (
 	shutdownCh   = make(chan struct{})
 	shutdownOnce sync.Once
 	httpClient   = &http.Client{Timeout: 5 * time.Second}
+	// Shared secret with OctoOps (passed in via BRIDGE_TOKEN). When set, every
+	// endpoint requires "Authorization: Bearer <token>" and the outbound callback
+	// presents it. Empty = unauthenticated (legacy / interactive pairing only).
+	bridgeToken string
 )
+
+// authOK reports whether a request may proceed: true when no token is configured,
+// otherwise a constant-time match of the bearer Authorization header.
+func authOK(r *http.Request) bool {
+	if bridgeToken == "" {
+		return true
+	}
+	expected := "Bearer " + bridgeToken
+	got := r.Header.Get("Authorization")
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
+}
 
 func main() {
 	port := flag.Int("port", envInt("BRIDGE_PORT", 3000), "HTTP listen port")
 	dbPath := flag.String("db", "whatsmeow.db", "SQLite session database path")
 	flag.Parse()
+
+	bridgeToken = os.Getenv("BRIDGE_TOKEN")
+	if bridgeToken == "" {
+		log.Println("warning: BRIDGE_TOKEN not set — HTTP API is unauthenticated")
+	}
 
 	dbLog := waLog.Stdout("Database", "ERROR", true)
 	container, err := sqlstore.New(context.Background(), "sqlite", fmt.Sprintf("file:%s?_pragma=foreign_keys(1)", *dbPath), dbLog)
@@ -170,7 +197,16 @@ func onEvent(evt interface{}) {
 }
 
 func postCallback(url string, payload []byte) {
-	resp, err := httpClient.Post(url, "application/json", bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		log.Printf("callback build: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if bridgeToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bridgeToken)
+	}
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Printf("callback post: %v", err)
 		return
@@ -181,7 +217,11 @@ func postCallback(url string, payload []byte) {
 
 // --- HTTP handlers -----------------------------------------------------------
 
-func handleGroups(w http.ResponseWriter, _ *http.Request) {
+func handleGroups(w http.ResponseWriter, r *http.Request) {
+	if !authOK(r) {
+		writeJSON(w, http.StatusUnauthorized, errResp("unauthorized"))
+		return
+	}
 	if !waClient.IsConnected() || waClient.Store.ID == nil {
 		writeJSON(w, http.StatusServiceUnavailable, errResp("not logged in"))
 		return
@@ -208,7 +248,11 @@ func handleGroups(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "groups": result})
 }
 
-func handleHealth(w http.ResponseWriter, _ *http.Request) {
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	if !authOK(r) {
+		writeJSON(w, http.StatusUnauthorized, errResp("unauthorized"))
+		return
+	}
 	loggedIn := waClient.IsConnected() && waClient.Store.ID != nil
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":        true,
@@ -222,6 +266,10 @@ type sendReq struct {
 }
 
 func handleSend(w http.ResponseWriter, r *http.Request) {
+	if !authOK(r) {
+		writeJSON(w, http.StatusUnauthorized, errResp("unauthorized"))
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
 		return
@@ -250,6 +298,10 @@ type cbReq struct {
 }
 
 func handleRegisterCallback(w http.ResponseWriter, r *http.Request) {
+	if !authOK(r) {
+		writeJSON(w, http.StatusUnauthorized, errResp("unauthorized"))
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
 		return
@@ -267,6 +319,10 @@ func handleRegisterCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if !authOK(r) {
+		writeJSON(w, http.StatusUnauthorized, errResp("unauthorized"))
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, errResp("method not allowed"))
 		return
