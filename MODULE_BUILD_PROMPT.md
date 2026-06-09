@@ -42,10 +42,17 @@ Scheduler ─(cron)─▶ your job handler            Event Bus ─▶ your list
 
 - **Telegram is the control plane.** Operators type `/command`; the Router checks
   their role, calls your handler, sends your `Response` back.
-- **WhatsApp is output-only and optional.** Modules may *push* to WhatsApp, but it
-  may be disabled — always check `transports.get("whatsapp")` for `None`.
+- **WhatsApp is push-first and optional.** Modules may *push* to WhatsApp, but it
+  may be disabled — always check `transports.get("whatsapp")` for `None`. There is
+  also an **optional inbound path**, but it routes every message from a whitelisted
+  number to **one** configured command (`transport.whatsapp_command`) — a WhatsApp
+  user can never reach the rest of the bot. If you want your command usable over
+  WhatsApp, see §5b (conversations) for the single-command + keyword-gate pattern.
 - **The core is domain-neutral.** All business logic lives in modules. Modules
   never import each other — they communicate via the **event bus**.
+- **Modules can be conversational.** Beyond one-shot `/command → Response`, a module
+  can ask follow-up questions (a menu, a multi-field "add" flow) by driving a
+  per-user state machine through `ctx.registry.conversations` — see §5b.
 - **Modules load once, at startup.** There is no hot-reload. Drop the folder in,
   enable it, **restart** — that's the plug-and-play loop.
 
@@ -217,16 +224,80 @@ groups = ctx.registry.whatsapp_groups  # list[dict] | None
 ctx.registry.start_time          # datetime, tz-aware
 ctx.registry.module_names        # list[str] of loaded modules
 ctx.registry.config.core.timezone
+ctx.registry.config.core.language    # "en" | "pt-BR" — localize replies (see below)
+ctx.registry.router.entries()        # [(command_name, CommandDef, owning_module)] — introspect
+                                     #   the live command set (e.g. a /help listing). May be
+                                     #   None very early in tests; guard it.
+
+# --- multi-step conversations (ask follow-up questions) — see §5b ---
+ctx.registry.conversations           # ConversationStore (per-user flow state)
 
 # --- optional: structured logging (core infra, fine to use) ---
 from octoops.core.logging import get_logger
 log = get_logger("octoops.modules.myfeature")
 ```
 
+**Localization.** For user-facing text, read `ctx.registry.config.core.language`
+(set by the wizard's language picker; `"en"` is the default/fallback) and resolve
+strings from a small per-module catalog. You may also localize a command's *name*
+and a module's `ModuleRegistration(name=...)` from it. The `deadlines` module
+(command `/deadlines` in EN, `/vencimentos` in pt-BR) and `help` (`/help` + `/ajuda`)
+are the reference pattern — both keep a tiny `i18n.py` with `tr(lang, key, **kw)`.
+
 `ctx.event_bus` and `ctx.scheduler` are also exposed directly on `ctx` (same
 instances as on `ctx.registry`).
 
 Handy formatters: `from octoops.shared.text import humanize_timedelta, humanize_duration`.
+
+---
+
+## 5b. Multi-step conversations (optional)
+
+Some commands need to ask follow-up questions — a menu, or an "add a record" flow
+collected one field at a time. The core gives you a tiny per-user state store; you
+drive your own little state machine through it. **Your handler is re-entered for
+each reply** and decides what to do based on the state you saved.
+
+```python
+from octoops.core.conversations import conversation_key
+
+async def handle(request: Request, ctx: ModuleContext) -> Response:
+    store = ctx.registry.conversations
+    key = conversation_key(request.source, request.user_id)   # per (transport, user)
+    text = " ".join(request.args).strip()
+    conv = store.get(key)                 # None if no open flow (or it expired, 10-min TTL)
+
+    if conv is None:                      # fresh: open the menu
+        store.start(key, command=request.command, data={"step": "menu"})
+        return Response(text="1) … 2) … 3) …", chat_id=request.chat_id)
+
+    store.touch(key)                      # reset the idle TTL on activity
+    if conv.data["step"] == "menu":
+        ...                               # advance: set conv.data["step"], or store.end(key) when done
+    return Response(text="…", chat_id=request.chat_id)
+```
+
+API: `store.start(key, command, data={})`, `store.get(key) -> Conversation | None`
+(holds `.command` and a free-form `.data` dict), `store.touch(key)`, `store.end(key)`.
+State is **in-memory per process** (a restart drops open flows — that's intended).
+
+**How a follow-up message reaches you differs per transport — design for both:**
+
+- **Telegram.** The user types your `/command` once; subsequent *non-slash* replies
+  (`3`, a date, …) are routed back to the owning command automatically **while a
+  conversation is open** for that user. A `/`-message always starts fresh (the
+  user's escape hatch). So you don't need to do anything special.
+- **WhatsApp inbound.** *Every* message from a whitelisted number is forced to the
+  one configured command — so your handler is always re-entered, which is what makes
+  the flow work there. But it also means a bare "oi" would trigger you. The
+  convention (see `deadlines`) is a **keyword gate**: on a *fresh* message
+  (`conv is None`) when `request.source is TransportSource.WhatsApp`, only engage if
+  the text starts with your keyword; otherwise return `Response(text="")` (an empty
+  reply is not sent — stay quiet). An open conversation consumes every message.
+
+Always support a **cancel** word, and validate each step (re-prompt on bad input).
+The `deadlines` module is the full worked example (menu → add/edit/delete, EN/pt-BR,
+both transports).
 
 ---
 
@@ -251,7 +322,10 @@ reach you.
 **You MAY:** declare commands/jobs/listeners/config-fields/lifecycle-hooks; read
 your own config; publish & subscribe to events; resolve base-dir paths; push
 proactive Telegram/WhatsApp messages (guarding for a missing transport); opt a
-read-only command into the AI surface (`ai_invokable=True`).
+read-only command into the AI surface (`ai_invokable=True`); drive a multi-step
+conversation via `ctx.registry.conversations` (§5b); introspect the live command
+set via `ctx.registry.router.entries()`; localize text from
+`ctx.registry.config.core.language`.
 
 **You MUST NOT:**
 - ❌ **import another module** — communicate via the event bus.
@@ -485,6 +559,12 @@ async def test_ping_replies_pong():
     assert "pong" in resp.text
 ```
 
+For a **conversational** module (uses `ctx.registry.conversations`) or one that
+**introspects** (`ctx.registry.router`), the `SimpleNamespace` stub isn't enough —
+build a real `Registry` (with a `ConversationStore` / `Router`) and call your
+handler repeatedly to walk the flow. See `tests/test_deadlines.py` and
+`tests/test_help.py` for the pattern.
+
 Run: `uv run --extra mcp pytest -q` (all green before you call it done).
 
 ---
@@ -508,3 +588,10 @@ Run: `uv run --extra mcp pytest -q` (all green before you call it done).
 > If your idea can't be expressed within this contract, it is a **core/registry
 > change, not a module** — surface that rather than working around the rules.
 > For ideation and the project's open design questions, see `BRAINSTORM.md`.
+
+**Reference modules in-tree** (read these for working patterns):
+- `status` — the minimal command (uptime/role).
+- `help` — command introspection via `ctx.registry.router` (a role-filtered listing).
+- `brain` — config fields + a `Password`/env-var secret + an outbound AI call.
+- `deadlines` — a full multi-step conversation (menu → add/edit/delete), EN/pt-BR
+  localization, JSON persistence, and the WhatsApp single-command + keyword gate.

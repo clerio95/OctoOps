@@ -2,9 +2,11 @@
 
 Modular async bot runtime. **Telegram** is the control plane (operators send
 commands, receive responses); **WhatsApp** is primarily an output transport (the
-bot pushes messages via the Whatsmeow Go bridge), with an optional, opt-in
-*brain-only* inbound path. Business logic lives only in drop-in modules under
-`octoops/modules/`; the core is small and domain-neutral.
+bot pushes messages via the Whatsmeow Go bridge), with an optional, opt-in inbound
+path that routes whitelisted senders to a **single configured command**. Commands
+can be **multi-step conversations** (menus, guided flows), and user-facing text is
+**localizable** (English / Brazilian Portuguese). Business logic lives only in
+drop-in modules under `octoops/modules/`; the core is small and domain-neutral.
 
 ## Quick start
 
@@ -41,6 +43,8 @@ flow and ideas.
 Shipped modules:
 
 - **`status`** — `/status`: uptime, loaded modules, your role (reference module).
+- **`help`** — `/help` (and `/ajuda`): lists the commands you can run, grouped by
+  module and **filtered by your role**, with localized framing.
 - **`access`** — manage the whitelist from Telegram: `/whoami`, `/users`,
   `/grant`, `/revoke`, plus one-time `/invite` links for new users.
 - **`brain`** — `/ask <question>`: an embedded AI assistant grounded in a folder
@@ -48,6 +52,11 @@ Shipped modules:
   one key reaches OpenRouter, Google Gemini, Groq, a local Ollama, and free-tier
   models; switch provider/model in `[modules.brain]`. Optionally reachable by
   whitelisted WhatsApp numbers (see *Configuration*).
+- **`deadlines`** — `/deadlines` (or `/vencimentos` in pt-BR): an **interactive**
+  deadline tracker. A menu offers nearest deadlines, all deadlines, add, and edit
+  (with delete); the add/edit flows ask one field at a time. Works on Telegram and
+  WhatsApp; records persist to a JSON file. Reference example of a multi-step,
+  localized module.
 
 ## Configuration & secrets
 
@@ -61,9 +70,15 @@ env var named `{MODULE}_{KEY}` — the brain reads **`BRAIN_API_KEY`**. You can 
 that env var directly instead of using the wizard.
 
 WhatsApp inbound (off by default — WhatsApp stays output-only) is configured under
-`[transport]`: `whatsapp_inbound_enabled`, a phone-number `whatsapp_allow` list,
-and a role. Whitelisted senders can only ever reach the brain (`/ask`), never any
-other command.
+`[transport]`: `whatsapp_inbound_enabled`, a phone-number `whatsapp_allow` list, a
+role, and `whatsapp_command` — the **one** command every inbound message is routed
+to. Whitelisted senders can only ever reach that single command (e.g. the brain's
+`/ask`, or the deadlines flow `/vencimentos`), never the rest of the bot. The bot's
+startup message on WhatsApp states which command is reachable (and warns if
+`whatsapp_command` doesn't match a registered command).
+
+The interface language is set in the wizard and persisted as `[core] language`
+(`en` / `pt-BR`); modules localize their command names and replies from it.
 
 ## Portability
 
@@ -82,13 +97,16 @@ placed manually); a missing bridge only disables WhatsApp, nothing else.
 Core framework (complete, reviewed):
 
 - **Core:** contracts, registry, router, event bus, scheduler (APScheduler 3.x),
-  plugin loader, bootstrap, permissions, structured secret-scrubbing logging.
-- **Transports:** Telegram (python-telegram-bot, supervised lifecycle), WhatsApp
-  (supervised bridge sidecar; output + optional brain-only inbound), response router.
-- **Wizard:** Textual setup TUI — dynamic per-module config from each module's
-  `ConfigField` declarations, guided Telegram onboarding (token verify + chat-ID
-  auto-detect), optional WhatsApp, secret `.env` writing, Windows Task Scheduler
-  registration, non-destructive re-runs.
+  plugin loader, bootstrap, permissions, a per-user conversation store (multi-step
+  flows), structured secret-scrubbing logging.
+- **Transports:** Telegram (python-telegram-bot, supervised lifecycle; routes
+  follow-up replies to open conversations), WhatsApp (supervised bridge sidecar;
+  output + optional single-command inbound), response router.
+- **Wizard:** Textual setup TUI — EN / pt-BR language picker (persisted to
+  `[core] language`), dynamic per-module config from each module's `ConfigField`
+  declarations, guided Telegram onboarding (token verify + chat-ID auto-detect),
+  optional WhatsApp, secret `.env` writing, Windows Task Scheduler registration,
+  non-destructive re-runs.
 - **MCP server (optional `octoops[mcp]`):** exposes the module catalog + status as
   resources and opt-in commands as tools over Streamable HTTP (loopback, optional
   bearer token). Off by default; command execution is quadruple-gated.
@@ -99,7 +117,7 @@ Core framework (complete, reviewed):
 
 ```bash
 uv sync                       # provision Python + deps from uv.lock
-uv run --extra mcp pytest     # full suite (221 tests; --extra mcp covers the MCP server)
+uv run --extra mcp pytest     # full suite (309 tests; --extra mcp covers the MCP server)
 ```
 
 `requirements*.txt` are kept for pip users, but `uv.lock` is the source of truth.

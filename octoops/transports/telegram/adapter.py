@@ -19,6 +19,7 @@ from telegram import Update
 from telegram.error import BadRequest, InvalidToken
 from telegram.ext import Application, MessageHandler, filters
 
+from octoops.core.conversations import conversation_key
 from octoops.core.errors import TransportError
 from octoops.core.logging import get_logger
 from octoops.core.response_router import route_response
@@ -126,6 +127,27 @@ class TelegramTransport(Transport):
         # exception is redeeming a valid one-time invite (/start <nonce>).
         if self._registry.permissions.role_for(user_id) is None:
             await self._maybe_redeem_invite(command, args, user_id, chat_id)
+            return
+
+        # Mid-conversation? Route a non-command reply (e.g. a menu choice "1" or a
+        # free-text answer) back to the command that owns the open flow so a
+        # module's multi-step state machine can advance. A '/'-prefixed message
+        # always starts fresh, so the user can escape a stuck flow with any command.
+        text = message.text.strip()
+        key = conversation_key(TransportSource.Telegram, user_id)
+        conv = self._registry.conversations.get(key)
+        if conv is not None and not text.startswith("/"):
+            request = Request(
+                command=conv.command,
+                args=[text],
+                raw_text=message.text,
+                user_id=user_id,
+                chat_id=chat_id,
+                source=TransportSource.Telegram,
+            )
+            response = await self._router.dispatch(request)
+            if response is not None:
+                await route_response(response, self._registry)
             return
 
         if not command:

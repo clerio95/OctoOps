@@ -16,6 +16,40 @@ from octoops.shared.models import Role
 
 DEFAULT_LOG_MAX_BYTES = 10_000_000
 
+# Substrings that mark a per-module config key as secret-bearing. A module's
+# Password fields are normally routed to the .env sidecar, but a secret hand-placed
+# in config.toml under [modules.<name>] (e.g. an api_key fallback) must still be
+# scrubbed from logs and redacted in the wizard preview.
+_SECRET_FIELD_HINTS = (
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "private_key",
+    "access_key",
+)
+
+
+def is_secret_field_name(name: str) -> bool:
+    """True if a config field name looks secret-bearing (case-insensitive)."""
+    low = name.lower()
+    return any(hint in low for hint in _SECRET_FIELD_HINTS)
+
+
+def module_secret_values(module_sections: dict[str, Any]) -> list[str]:
+    """Collect non-empty string secret values from [modules.<name>] subtables."""
+    out: list[str] = []
+    for section in module_sections.values():
+        if not isinstance(section, dict):
+            continue
+        for key, value in section.items():
+            if isinstance(value, str) and value and is_secret_field_name(key):
+                out.append(value)
+    return out
+
 
 def _as_str_list(value: Any, key: str) -> list[str]:
     if value is None:
@@ -61,6 +95,9 @@ class CoreConfig:
     default_role: Role = Role.Viewer
     log_file: str = "./logs/octoops.log"
     log_max_bytes: int = DEFAULT_LOG_MAX_BYTES
+    # UI/output language for modules (e.g. command names and replies). The setup
+    # wizard persists its chosen language here; "en" is the default and fallback.
+    language: str = "en"
 
 
 @dataclass
@@ -75,6 +112,27 @@ class McpConfig:
     allow_command_execution: bool = False
     # Bearer token clients must present (defense in depth on the loopback bind).
     token: str | None = None
+
+    def validate(self) -> None:
+        """Fail closed on dangerous combinations. Only meaningful when enabled."""
+        if not self.enabled:
+            return
+        loopback = is_loopback_host(self.host)
+        if self.allow_command_execution and not self.token:
+            raise ConfigError(
+                "[mcp] allow_command_execution requires a token — refusing to "
+                "expose command execution with no authentication"
+            )
+        if not loopback and not self.token:
+            raise ConfigError(
+                f"[mcp] host {self.host!r} is not loopback and no token is set — "
+                "refusing to expose the MCP server to the network unauthenticated"
+            )
+
+
+def is_loopback_host(host: str) -> bool:
+    """True for the usual loopback binds (and 0.0.0.0/empty are NOT loopback)."""
+    return host.strip().lower() in {"127.0.0.1", "::1", "localhost", "[::1]"}
 
 
 @dataclass
@@ -168,6 +226,8 @@ class AppConfig:
             default_role=default_role,
             log_file=str(co.get("log_file", CoreConfig.log_file)),
             log_max_bytes=int(co.get("log_max_bytes", DEFAULT_LOG_MAX_BYTES)),
+            language=str(co.get("language", CoreConfig.language)).strip()
+            or CoreConfig.language,
         )
 
         mc = data.get("mcp") or {}
@@ -185,6 +245,7 @@ class AppConfig:
             allow_command_execution=bool(mc.get("allow_command_execution", False)),
             token=str(token) if token else None,
         )
+        mcp.validate()
 
         modules = data.get("modules") or {}
         enabled = _as_str_list(modules.get("enabled"), "modules.enabled")

@@ -78,3 +78,42 @@ async def test_known_user_reaches_dispatch(registry):
     await transport._on_message(_fake_update("300"), None)  # admin
     assert len(router.dispatched) == 1
     assert router.dispatched[0].command == "status"
+
+
+@pytest.mark.asyncio
+async def test_active_conversation_forwards_plain_reply(registry):
+    """A non-command message during an open flow is routed to the owning command."""
+    from octoops.core.conversations import conversation_key
+    from octoops.shared.models import TransportSource
+
+    transport = TelegramTransport(token="x")
+    router = _RecordingRouter()
+    transport._router = router
+    transport._registry = registry
+
+    key = conversation_key(TransportSource.Telegram, "300")
+    registry.conversations.start(key, command="deadlines", data={"step": "menu"})
+
+    await transport._on_message(_fake_update("300", text="1"), None)
+    assert len(router.dispatched) == 1
+    req = router.dispatched[0]
+    assert req.command == "deadlines"   # forwarded to the active command, not "1"
+    assert req.args == ["1"]            # the whole reply becomes the argument
+
+
+@pytest.mark.asyncio
+async def test_slash_command_escapes_active_conversation(registry):
+    """A '/'-message during a flow starts fresh (escape hatch), not a continuation."""
+    from octoops.core.conversations import conversation_key
+    from octoops.shared.models import TransportSource
+
+    transport = TelegramTransport(token="x")
+    router = _RecordingRouter()
+    transport._router = router
+    transport._registry = registry
+
+    key = conversation_key(TransportSource.Telegram, "300")
+    registry.conversations.start(key, command="deadlines", data={"step": "menu"})
+
+    await transport._on_message(_fake_update("300", text="/status"), None)
+    assert router.dispatched[0].command == "status"  # not forwarded to deadlines

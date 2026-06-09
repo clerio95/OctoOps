@@ -178,10 +178,15 @@ def main(argv: list[str] | None = None) -> int:
     for key, value in env_secrets.items():
         os.environ.setdefault(key, value)
 
+    from octoops.core.config import module_secret_values
+
     secrets = [config.telegram.bot_token]
     if config.mcp.token:
         secrets.append(config.mcp.token)
     secrets.extend(env_secrets.values())  # scrub module secrets from logs too
+    # Also scrub secrets hand-placed in config.toml [modules.<name>] (e.g. an
+    # api_key fallback) — the .env path is preferred but not enforced.
+    secrets.extend(module_secret_values(config.module_sections))
     configure_logging(
         paths.resolve(config.core.log_file),
         config.core.log_max_bytes,

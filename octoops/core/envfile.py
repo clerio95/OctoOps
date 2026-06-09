@@ -6,11 +6,44 @@ into the process environment at startup. A module reads its secret from the
 corresponding env var (e.g. the brain reads ``BRAIN_API_KEY``). No third-party
 dependency: this parses a simple ``KEY=value`` format (``#`` comments, optional
 surrounding quotes).
+
+Values are always written double-quoted with C-style escaping (``\\``, ``\"``,
+``\n``, ``\r``) so a secret containing quotes, backslashes, or newlines survives a
+round-trip and can never break out of its line. Double-quoted values are
+unescaped on read; bare and single-quoted values are taken literally (the latter
+for hand-edited files).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+_UNESCAPE = {"\\": "\\", '"': '"', "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _unescape(value: str) -> str:
+    out: list[str] = []
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if ch == "\\" and i + 1 < len(value):
+            nxt = value[i + 1]
+            out.append(_UNESCAPE.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _escape(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
 
 
 def parse_env(text: str) -> dict[str, str]:
@@ -23,7 +56,10 @@ def parse_env(text: str) -> dict[str, str]:
         key = key.strip()
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            quote = value[0]
             value = value[1:-1]
+            if quote == '"':
+                value = _unescape(value)
         if key:
             out[key] = value
     return out
@@ -32,7 +68,7 @@ def parse_env(text: str) -> dict[str, str]:
 def format_env(mapping: dict[str, str]) -> str:
     if not mapping:
         return ""
-    lines = [f'{key}="{mapping[key]}"' for key in sorted(mapping)]
+    lines = [f'{key}="{_escape(mapping[key])}"' for key in sorted(mapping)]
     return "\n".join(lines) + "\n"
 
 

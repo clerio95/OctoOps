@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
+from octoops.core.conversations import ConversationStore
 from octoops.core.errors import ConfigError
 
 if TYPE_CHECKING:
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from octoops.core.invites import InviteStore
     from octoops.core.paths import AppPaths
     from octoops.core.permissions import Permissions
+    from octoops.core.router import Router
     from octoops.core.scheduler import Scheduler
     from octoops.transports import Transport
 
@@ -50,6 +52,12 @@ class Registry:
     start_time: datetime
     paths: "AppPaths | None" = None
     transports: dict[str, "Transport"] = field(default_factory=dict)
+    # The command router, set during bootstrap. Lets a module introspect the
+    # registered commands (e.g. a /help listing) without core knowing about it.
+    router: "Router | None" = None
+    # Open multi-step command flows, keyed by (transport, user). Modules drive
+    # their own state machines through this; transports route follow-ups here.
+    conversations: ConversationStore = field(default_factory=ConversationStore)
     # Names of successfully loaded modules (for /status and introspection).
     module_names: list[str] = field(default_factory=list)
     # One-time invites for onboarding new users; the transport gate redeems them.

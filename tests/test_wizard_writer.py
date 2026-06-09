@@ -40,6 +40,22 @@ def test_render_is_valid_toml_with_mcp_section():
     assert data["mcp"]["allow_command_execution"] is False
 
 
+def test_language_written_and_roundtrips(tmp_path):
+    state = _state()
+    state.language = "pt-BR"
+    path = tmp_path / "config.toml"
+    write_config(state, path)
+    cfg = AppConfig.load(path)
+    assert cfg.core.language == "pt-BR"
+    # config -> WizardState preserves the persisted language for a re-run.
+    assert state_from_config(cfg).language == "pt-BR"
+
+
+def test_language_defaults_to_en_in_render():
+    data = tomllib.loads(render_config(_state()))
+    assert data["core"]["language"] == "en"
+
+
 def test_roundtrips_through_appconfig(tmp_path):
     path = tmp_path / "config.toml"
     write_config(_state(), path)
@@ -63,6 +79,25 @@ def test_preview_redacts_mcp_token():
     state.mcp_section = {"enabled": True, "token": "supersecret"}
     preview = render_config(state, redact_secrets=True)
     assert "supersecret" not in preview
+
+
+def test_preview_redacts_module_secret_in_config():
+    # A secret hand-placed under [modules.<name>] (e.g. api_key fallback) is
+    # masked in the preview but a non-secret field (device_ip) is shown.
+    state = _state()
+    state.module_config = {"brain": {"api_key": "sk-leakme", "model": "x"}}
+    preview = render_config(state, redact_secrets=True)
+    assert "sk-leakme" not in preview
+    assert "model" in preview
+
+
+def test_written_file_keeps_module_secret(tmp_path):
+    # The file on disk is never redacted — the fallback must remain usable.
+    state = _state()
+    state.module_config = {"brain": {"api_key": "sk-leakme"}}
+    path = tmp_path / "config.toml"
+    write_config(state, path)
+    assert AppConfig.load(path).module_config("brain")["api_key"] == "sk-leakme"
 
 
 def test_written_file_keeps_real_secret_and_is_private(tmp_path):

@@ -36,4 +36,7 @@ class LanguageStep(BaseStep):
         idx = self.query_one("#language", RadioSet).pressed_index
         if 0 <= idx < len(codes):
             self.wizard_app.language = codes[idx]
+            # Persist the choice so modules can localize at runtime (the wizard's
+            # own session language stays in wizard_app.language).
+            self.state.language = codes[idx]
         return None

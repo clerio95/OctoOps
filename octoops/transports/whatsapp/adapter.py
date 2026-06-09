@@ -307,6 +307,43 @@ class WhatsAppTransport(Transport):
         except Exception as exc:  # noqa: BLE001 - discovery must never crash the supervisor
             _log.warning("whatsapp.groups_refresh_failed", error=str(exc))
 
+    def _whatsapp_access_text(self, lang: str) -> str:
+        """A startup-message line stating what's reachable over WhatsApp inbound.
+
+        WhatsApp inbound is a single forced command, so this resolves that one
+        command to its owning module. If inbound is off it says output-only; if
+        the configured command isn't actually registered (the classic
+        whatsapp_command / core.language mismatch) it warns, so the operator
+        catches the misconfiguration from the startup message itself.
+        """
+        pt = lang.strip().lower().startswith("pt")
+        if not self._inbound_enabled:
+            return (
+                "📵 WhatsApp: somente saída (sem comandos de entrada)."
+                if pt
+                else "📵 WhatsApp: output-only (no inbound commands)."
+            )
+        cmd = self._command.lstrip("/").lower()
+        module = None
+        if self._router is not None:
+            for name, _cmd_def, owning_module in self._router.entries():
+                if name == cmd:
+                    module = owning_module
+                    break
+        if module is None:
+            return (
+                f"⚠ WhatsApp: o comando de entrada /{cmd} está ativado mas não foi "
+                "registrado — verifique [transport] whatsapp_command e [core] language."
+                if pt
+                else f"⚠ WhatsApp: inbound command /{cmd} is enabled but not "
+                "registered — check [transport] whatsapp_command and [core] language."
+            )
+        return (
+            f"💬 WhatsApp: envie uma mensagem para usar /{cmd} ({module})."
+            if pt
+            else f"💬 WhatsApp: send a message to use /{cmd} ({module})."
+        )
+
     async def _notify_admins(self) -> None:
         if not self._admin_chat_ids:
             return
@@ -315,6 +352,9 @@ class WhatsAppTransport(Transport):
             md = build_status_text(reg)
             # Strip markdown bold markers — WhatsApp uses its own formatting.
             text = md.replace("*OctoOps status*", "OctoOps started").replace("*", "")
+            # Tell admins what's actually usable over WhatsApp (inbound is limited
+            # to one forced command), localized to the configured language.
+            text += "\n" + self._whatsapp_access_text(reg.config.core.language)
         else:
             text = "OctoOps started."
         try:

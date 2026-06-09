@@ -32,18 +32,23 @@ admin_user_ids = ["123456789"]
 default_role = "viewer"
 log_file = "./logs/octoops.log"
 log_max_bytes = 10_000_000
+# UI/output language for modules (command names + replies). "en" or "pt-BR".
+# The setup wizard sets this from its language picker. With "pt-BR" the deadlines
+# module registers as /vencimentos; otherwise /deadlines.
+language = "en"
 
 [mcp]
 # Optional MCP server (a second control plane) — off by default.
 enabled = false
-host = "127.0.0.1"
+host = "127.0.0.1"                    # loopback; a non-loopback host REQUIRES a token
 port = 3002
 service_role = "viewer"              # MCP clients are treated as this role
 allow_command_execution = false      # master gate; commands also need ai_invokable
+                                     # NOTE: enabling this REQUIRES a token (fail-closed)
 # token = "set-a-bearer-token-to-require-auth"
 
 [modules]
-enabled = ["status", "brain"]        # module folder names that are active
+enabled = ["status", "help", "brain", "deadlines"]   # module folder names that are active
 
 # Per-module config sections look like:
 # [modules.my_module]
@@ -61,3 +66,14 @@ base_url    = "https://openrouter.ai/api/v1"
 model       = "google/gemini-2.0-flash-exp:free"
 prompts_dir = "data/brain/prompts"   # drop .md/.txt context files here (base-dir-relative)
 max_tokens  = 1024
+
+[modules.deadlines]
+# Interactive deadline tracker. The command is /deadlines (or /vencimentos when
+# core.language = "pt-BR"): a menu offers nearest deadlines, all deadlines, or
+# adding a new one (asked one field at a time). Works on Telegram and WhatsApp.
+file_path    = "data/deadlines.json"  # JSON store for the records (base-dir-relative)
+nearest_days = 15                     # window for the "nearest deadlines" option
+# To drive this over WhatsApp, enable inbound above and point whatsapp_command at
+# the SAME command name for your language, e.g.:
+#   whatsapp_inbound_enabled = true
+#   whatsapp_command = "deadlines"     # or "vencimentos" when language = "pt-BR"

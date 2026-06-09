@@ -1,0 +1,5 @@
+{
+  "name": "help",
+  "version": "1.0.0",
+  "description": "Lists the commands you can use (/help or /ajuda), filtered by your role."
+}

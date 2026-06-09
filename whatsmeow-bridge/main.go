@@ -93,6 +93,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
+	// The session DB holds WhatsApp encryption keys — restrict to the owner.
+	// Best-effort: POSIX honours the mode; on Windows (NTFS ACLs) it's a no-op
+	// and the install dir's ACL is the real guard (see setup.ps1 icacls).
+	for _, p := range []string{*dbPath, *dbPath + "-wal", *dbPath + "-shm"} {
+		if _, statErr := os.Stat(p); statErr == nil {
+			if chErr := os.Chmod(p, 0o600); chErr != nil {
+				log.Printf("warning: chmod %s: %v", p, chErr)
+			}
+		}
+	}
 
 	deviceStore, err := container.GetFirstDevice(context.Background())
 	if err != nil {

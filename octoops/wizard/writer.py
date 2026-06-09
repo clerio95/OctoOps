@@ -11,7 +11,7 @@ from pathlib import Path
 
 import tomlkit
 
-from octoops.core.config import AppConfig
+from octoops.core.config import AppConfig, is_secret_field_name
 from octoops.core.envfile import format_env
 from octoops.core.secure_io import write_private_text
 from octoops.wizard.state import WizardState
@@ -63,6 +63,7 @@ def build_document(state: WizardState) -> tomlkit.TOMLDocument:
     core["default_role"] = state.default_role
     core["log_file"] = state.log_file
     core["log_max_bytes"] = int(state.log_max_bytes)
+    core["language"] = state.language
     doc["core"] = core
 
     modules = tomlkit.table()
@@ -135,6 +136,7 @@ def state_from_config(config: AppConfig) -> WizardState:
         default_role=config.core.default_role.name.lower(),
         log_file=config.core.log_file,
         log_max_bytes=config.core.log_max_bytes,
+        language=config.core.language,
         enabled_modules=list(config.enabled_modules),
         module_config={
             name: dict(section) for name, section in config.module_sections.items()
@@ -154,6 +156,16 @@ def render_config(state: WizardState, *, redact_secrets: bool = False) -> str:
         mcp = doc.get("mcp")
         if mcp is not None and mcp.get("token"):
             mcp["token"] = _SECRET_MASK
+        # Mask any secret-bearing key hand-placed in a [modules.<name>] subtable
+        # (e.g. an api_key fallback) so it never shows in the summary preview.
+        modules = doc.get("modules")
+        if modules is not None:
+            for key, section in modules.items():
+                if key == "enabled" or not hasattr(section, "items"):
+                    continue
+                for field_name in list(section.keys()):
+                    if is_secret_field_name(field_name) and section.get(field_name):
+                        section[field_name] = _SECRET_MASK
     return tomlkit.dumps(doc)
 
 

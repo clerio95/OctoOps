@@ -60,6 +60,7 @@ def build_runtime(config: AppConfig, paths: AppPaths | None = None) -> Runtime:
         invites=InviteStore(app_paths.data / "invites.json"),
     )
     router = Router(permissions)
+    registry.router = router  # let modules introspect commands (e.g. /help)
 
     modules = load_modules(registry)
     registry.module_names = [m.registration.name for m in modules]

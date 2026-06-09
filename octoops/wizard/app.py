@@ -80,11 +80,11 @@ class WizardApp(App):
         super().__init__()
         self.discovered = discovered
         self.config_exists = config_exists
-        # Wizard-session UI language (en / pt-BR). Not persisted to config; the
-        # language picker is the first screen and sets this before any other
-        # screen composes.
-        self.language = DEFAULT_LANGUAGE
         self.state = state or WizardState()
+        # Wizard-session UI language (en / pt-BR). The language picker is the first
+        # screen; on a re-run we preselect whatever the existing config persisted
+        # (state.language) so the operator's prior choice is the default.
+        self.language = self.state.language or DEFAULT_LANGUAGE
         if not self.state.enabled_modules:
             # Default-enable everything that loaded cleanly.
             self.state.enabled_modules = [

@@ -107,6 +107,9 @@ class WizardState:
     default_role: str = "viewer"
     log_file: str = "./logs/octoops.log"
     log_max_bytes: int = 10_000_000
+    # Persisted UI/output language for modules (mirrors the wizard's own language
+    # choice). Written to [core] language; modules localize their replies from it.
+    language: str = DEFAULT_LANGUAGE
     # [modules]
     enabled_modules: list[str] = field(default_factory=list)
     # [modules.<name>] -> {key: value}. Values are typed (str/int/bool) once

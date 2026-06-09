@@ -26,11 +26,16 @@ MCP server (optional) ──▶ exposes your opt-in commands as AI tools + read-
 
 - **Telegram is the control plane.** Operators type commands; the Router checks
   their role and calls your handler; the reply goes back to Telegram.
-- **WhatsApp is output-only.** Modules can *push* messages to WhatsApp chats
-  (e.g. from a scheduled job), but WhatsApp users can't issue commands.
+- **WhatsApp is push-first.** Modules can *push* messages to WhatsApp chats (e.g.
+  from a scheduled job). There's also an *optional* inbound path, but it routes
+  every message from a whitelisted number to **one** configured command — so a
+  WhatsApp user can drive a single module flow (e.g. `deadlines`), never the whole bot.
 - **The core is domain-neutral.** All business logic lives in modules. Modules
   never import each other — they talk via the **event bus**.
 - **Roles:** `Viewer < Operator < Admin`. Every command declares a `min_role`.
+- **Commands can be conversational.** A module can ask follow-up questions (a menu,
+  a multi-field flow) by driving a per-user state machine through
+  `ctx.registry.conversations` — works on Telegram and WhatsApp.
 
 ---
 
@@ -60,6 +65,9 @@ ctx.registry.transports["whatsapp"].send(Response(   # proactively push to Whats
 ctx.registry.permissions.role_for(user_id)           # who's asking
 ctx.registry.paths.resolve("data/foo.csv")           # base-dir-relative paths
 ctx.registry.start_time / ctx.registry.module_names  # introspection
+ctx.registry.router.entries()                        # the live command set (e.g. for /help)
+ctx.registry.config.core.language                    # "en" | "pt-BR" — localize replies
+ctx.registry.conversations                           # per-user multi-step flow state
 ```
 
 A handler returns a `Response(text=..., chat_id=request.chat_id)`. Set
@@ -122,6 +130,11 @@ Every module idea is some combination of these. Ask: *which surfaces does this u
 4. **AI-exposed (MCP)** — mark a command `ai_invokable=True` and, with the MCP
    server enabled, an AI client can call it as a tool and read module/status
    resources. Lets an assistant *understand and operate* the bot.
+5. **Conversational (multi-step)** — a command that asks follow-up questions (menu,
+   guided "add"/"edit" flow) instead of taking everything on one line. Drive it
+   with `ctx.registry.conversations` (a per-user state machine; see
+   `MODULE_BUILD_PROMPT.md` §5b and the `deadlines` module). Works on Telegram and,
+   via the single-command inbound + a keyword gate, on WhatsApp.
 
 ---
 
@@ -129,7 +142,9 @@ Every module idea is some combination of these. Ask: *which surfaces does this u
 
 **May:** define commands, register jobs, subscribe/publish events, declare config
 fields, use startup/shutdown hooks, push proactive WhatsApp messages, read its own
-config, resolve base-dir paths, opt a command into the AI/MCP surface.
+config, resolve base-dir paths, opt a command into the AI/MCP surface, drive a
+multi-step conversation (`ctx.registry.conversations`), introspect the command set
+(`ctx.registry.router`), and localize text (`ctx.registry.config.core.language`).
 
 **Must not** (these are hard rules — they keep the system robust):
 - import another module (communicate via the event bus instead);

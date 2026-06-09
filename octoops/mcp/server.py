@@ -8,6 +8,7 @@ behind a bearer token. Requires the optional 'mcp' extra.
 
 from __future__ import annotations
 
+import hmac
 import json
 from typing import TYPE_CHECKING
 
@@ -31,7 +32,8 @@ class BearerTokenMiddleware:
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "http":
             headers = dict(scope.get("headers") or [])
-            if headers.get(b"authorization") != self._expected:
+            presented = headers.get(b"authorization") or b""
+            if not hmac.compare_digest(presented, self._expected):
                 await send(
                     {
                         "type": "http.response.start",
@@ -87,6 +89,15 @@ def _register_command_tool(mcp: "FastMCP", service: "McpService", name: str, des
 async def serve_mcp(service: "McpService") -> None:
     """Run the MCP server over Streamable HTTP until cancelled."""
     import uvicorn
+
+    from octoops.core.config import is_loopback_host
+
+    if not is_loopback_host(service.host):
+        _log.warning(
+            "mcp.non_loopback_bind",
+            host=service.host,
+            hint="MCP is reachable beyond localhost; ensure the token and network are trusted",
+        )
 
     mcp = build_mcp_server(service)
     app = mcp.streamable_http_app()

@@ -199,6 +199,73 @@ async def test_health_and_register_flow(mock_bridge):
     assert calls["register"][0]["url"] == f"http://127.0.0.1:{cb_port}/incoming"
 
 
+class _FakeRouter:
+    """Minimal router exposing entries() for the access-line tests."""
+
+    def __init__(self, entries):
+        self._entries = entries  # list of (name, command_def, module_name)
+
+    def entries(self):
+        return self._entries
+
+
+def _access_transport(*, inbound, command="vencimentos", router=None):
+    t = WhatsAppTransport(
+        bridge_path="/nonexistent", bridge_port=0, callback_port=0,
+        spawn=False, inbound_enabled=inbound, command=command,
+    )
+    t._router = router
+    return t
+
+
+def test_access_text_output_only_when_inbound_off():
+    t = _access_transport(inbound=False)
+    assert "output-only" in t._whatsapp_access_text("en")
+    assert "somente saída" in t._whatsapp_access_text("pt-BR")
+
+
+def test_access_text_names_command_and_module():
+    router = _FakeRouter([("vencimentos", None, "deadlines")])
+    t = _access_transport(inbound=True, command="vencimentos", router=router)
+    en = t._whatsapp_access_text("en")
+    assert "/vencimentos" in en and "(deadlines)" in en and "send a message" in en
+    pt = t._whatsapp_access_text("pt-BR")
+    assert "/vencimentos" in pt and "(deadlines)" in pt and "envie uma mensagem" in pt
+
+
+def test_access_text_warns_when_command_not_registered():
+    # The classic whatsapp_command / core.language mismatch: "deadlines" set but
+    # only "vencimentos" is registered -> the line flags it.
+    router = _FakeRouter([("vencimentos", None, "deadlines")])
+    t = _access_transport(inbound=True, command="deadlines", router=router)
+    en = t._whatsapp_access_text("en")
+    assert "not " in en and "/deadlines" in en and "whatsapp_command" in en
+
+
+@pytest.mark.asyncio
+async def test_notify_admins_appends_access_line(registry):
+    sent = []
+
+    class _Client:
+        async def send(self, chat_id, text):
+            sent.append((chat_id, text))
+
+        async def close(self):
+            pass
+
+    transport = WhatsAppTransport(
+        bridge_path="/nonexistent", bridge_port=0, callback_port=0,
+        client=_Client(), spawn=False, admin_chat_ids=["5511999998888@s.whatsapp.net"],
+    )
+    transport._registry = registry  # inbound off by default
+    await transport._notify_admins()
+
+    assert len(sent) == 1
+    body = sent[0][1]
+    assert "OctoOps started" in body
+    assert "WhatsApp: output-only" in body  # the new access line
+
+
 @pytest.mark.asyncio
 async def test_incoming_callback_acks_without_routing():
     cb_port = _free_port()

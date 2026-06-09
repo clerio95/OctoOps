@@ -16,3 +16,10 @@ data/*
 whatsmeow-bridge.exe
 whatsmeow-bridge/whatsmeow-bridge
 whatsmeow-bridge/whatsmeow-bridge.exe
+# WhatsApp session DB (encryption keys — never commit)
+whatsmeow.db
+whatsmeow.db-wal
+whatsmeow.db-shm
+whatsmeow-bridge/whatsmeow.db
+whatsmeow-bridge/whatsmeow.db-wal
+whatsmeow-bridge/whatsmeow.db-shm
