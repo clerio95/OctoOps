@@ -20,6 +20,7 @@ from octoops.core.paths import AppPaths
 from octoops.core.permissions import Permissions
 from octoops.core.plugin_loader import LoadedModule, load_modules
 from octoops.core.registry import Registry
+from octoops.core.errors import RouterError
 from octoops.core.role_store import RoleStore
 from octoops.core.router import Router
 from octoops.core.scheduler import Scheduler
@@ -62,16 +63,8 @@ def build_runtime(config: AppConfig, paths: AppPaths | None = None) -> Runtime:
     router = Router(permissions)
     registry.router = router  # let modules introspect commands (e.g. /help)
 
-    modules = load_modules(registry)
+    modules = _register_modules(load_modules(registry), router, event_bus, registry)
     registry.module_names = [m.registration.name for m in modules]
-
-    # Register commands (duplicate -> RouterError, fatal), listeners, jobs.
-    for loaded in modules:
-        reg, ctx = loaded.registration, loaded.ctx
-        for command in reg.commands:
-            router.register(command, ctx)
-        for listener in reg.listeners:
-            event_bus.subscribe(listener.event, listener.handler, ctx)
 
     _log.info(
         "runtime.built",
@@ -81,12 +74,56 @@ def build_runtime(config: AppConfig, paths: AppPaths | None = None) -> Runtime:
     return Runtime(config=config, registry=registry, router=router, modules=modules)
 
 
+def _register_modules(
+    modules: list[LoadedModule],
+    router: Router,
+    event_bus: EventBus,
+    registry: Registry,
+) -> list[LoadedModule]:
+    """Register each module's commands and listeners, isolating failures.
+
+    A command-name collision (RouterError) disables the *colliding module* — its
+    already-registered commands are rolled back, it is excluded from the runtime
+    (no listeners, jobs, or hooks), and the reason lands in registry.module_errors
+    so /status can show it. One bad drop-in module must never brick the bot.
+    """
+    active: list[LoadedModule] = []
+    for loaded in modules:
+        reg, ctx = loaded.registration, loaded.ctx
+        registered: list[str] = []
+        try:
+            for command in reg.commands:
+                router.register(command, ctx)
+                registered.append(command.name)
+        except RouterError as exc:
+            for name in registered:
+                router.unregister(name)
+            registry.module_errors.append(f"{ctx.name}: {exc}")
+            _log.error("module.disabled", module=ctx.name, error=str(exc))
+            continue
+        for listener in reg.listeners:
+            event_bus.subscribe(listener.event, listener.handler, ctx)
+        active.append(loaded)
+    return active
+
+
 async def start_runtime(runtime: Runtime) -> None:
     """Steps 9-10: register jobs, run on_startup hooks, start the scheduler."""
     for loaded in runtime.modules:
         reg, ctx = loaded.registration, loaded.ctx
         for job in reg.jobs:
-            await runtime.registry.scheduler.add_job(job, ctx)
+            try:
+                await runtime.registry.scheduler.add_job(job, ctx)
+            except Exception as exc:  # noqa: BLE001 - a bad schedule (e.g. a cron
+                # typo raising ValueError) must disable that job, not kill the bot.
+                _log.error(
+                    "job.register_failed",
+                    module=reg.name,
+                    job=job.name,
+                    schedule=job.schedule,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
 
     for loaded in runtime.modules:
         reg, ctx = loaded.registration, loaded.ctx

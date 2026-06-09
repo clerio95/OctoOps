@@ -107,3 +107,16 @@ def test_live_check_network_error_warns_not_fails(tmp_path, capsys):
     # Network failure can't distinguish a bad token -> warning, exit 0.
     assert code == 0
     assert "couldn't reach Telegram" in capsys.readouterr().out
+
+
+def test_whatsapp_session_pairing_state_reported(tmp_path, capsys):
+    (tmp_path / "config.toml").write_text(VALID_CONFIG)
+
+    code = run_checks(tmp_path / "config.toml", AppPaths(home=tmp_path))
+    out = capsys.readouterr().out
+    assert code == 0  # not paired is a warning, never a hard failure
+    assert "WhatsApp session" in out and "not paired" in out
+
+    (tmp_path / "whatsmeow.db").write_bytes(b"sqlite")
+    run_checks(tmp_path / "config.toml", AppPaths(home=tmp_path))
+    assert "paired (whatsmeow.db present)" in capsys.readouterr().out

@@ -44,6 +44,9 @@ class _RecordingRouter:
     def __init__(self):
         self.dispatched = []
 
+    def has_command(self, name):
+        return True
+
     async def dispatch(self, request):
         self.dispatched.append(request)
         return None  # no response -> no downstream send
@@ -117,3 +120,28 @@ async def test_slash_command_escapes_active_conversation(registry):
 
     await transport._on_message(_fake_update("300", text="/status"), None)
     assert router.dispatched[0].command == "status"  # not forwarded to deadlines
+
+
+@pytest.mark.asyncio
+async def test_expired_conversation_forwards_stale_reply_for_timeout_notice(registry):
+    """A plain reply just after a flow timed out is still forwarded to the owning
+    command (once), so the module can tell the user it expired instead of silence."""
+    from octoops.core.conversations import ConversationStore, conversation_key
+    from octoops.shared.models import TransportSource
+
+    transport = TelegramTransport(token="x")
+    router = _RecordingRouter()
+    transport._router = router
+    transport._registry = registry
+
+    now = [1000.0]
+    registry.conversations = ConversationStore(ttl_seconds=10.0, clock=lambda: now[0])
+    key = conversation_key(TransportSource.Telegram, "300")
+    registry.conversations.start(key, command="deadlines", data={"step": "menu"})
+    now[0] += 11.0  # the flow times out
+
+    await transport._on_message(_fake_update("300", text="3"), None)
+    assert len(router.dispatched) == 1
+    req = router.dispatched[0]
+    assert req.command == "deadlines"  # forwarded to the expired flow's command
+    assert req.args == ["3"]

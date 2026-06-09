@@ -41,6 +41,10 @@ class Router:
         self._commands[name] = (command_def, ctx)
         _log.info("command.registered", command=name, module=ctx.name)
 
+    def unregister(self, name: str) -> None:
+        """Remove a command (used to roll back a module whose registration failed)."""
+        self._commands.pop(name.lstrip("/").lower(), None)
+
     def has_command(self, name: str) -> bool:
         return name.lstrip("/").lower() in self._commands
 

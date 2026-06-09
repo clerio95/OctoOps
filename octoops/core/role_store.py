@@ -16,7 +16,7 @@ import json
 from pathlib import Path
 
 from octoops.core.logging import get_logger
-from octoops.core.secure_io import write_private_text
+from octoops.core.secure_io import quarantine_corrupt, write_private_text
 from octoops.shared.models import Role
 
 _log = get_logger("octoops.core.role_store")
@@ -34,8 +34,20 @@ class RoleStore:
             raw = json.loads(self._path.read_text("utf-8"))
             grants = raw.get("grants", {})
             return {str(uid): Role.from_str(role) for uid, role in grants.items()}
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        except OSError as exc:
+            # Couldn't read — the file itself may be fine, so leave it in place.
             _log.error("role_store.load_failed", path=str(self._path), error=str(exc))
+            return {}
+        except (ValueError, TypeError, AttributeError) as exc:
+            # Unparseable content: move it aside so the next save() can't replace
+            # the operator's data with this empty view.
+            quarantined = quarantine_corrupt(self._path)
+            _log.error(
+                "role_store.corrupt_quarantined",
+                path=str(self._path),
+                quarantined=str(quarantined),
+                error=str(exc),
+            )
             return {}
 
     def save(self, grants: dict[str, Role]) -> None:

@@ -301,3 +301,21 @@ async def test_gate_ignores_bad_nonce_and_plain_messages(monkeypatch):
     await transport._maybe_redeem_invite("status", [], "777", "777")  # not /start
     assert sent == []  # bot stays silent to non-invited unknown users
     assert perms.role_for("777") is None
+
+
+def test_corrupt_store_is_quarantined_before_next_save(tmp_path):
+    """A corrupt access.json must be preserved aside — the next save() would
+    otherwise atomically destroy whatever grants it held."""
+    path = tmp_path / "access.json"
+    path.write_text("{not valid json", "utf-8")
+
+    store = RoleStore(path)
+    assert store.load() == {}
+    assert not path.exists()  # moved aside, not left for save() to clobber
+    quarantined = list(tmp_path.glob("access.json.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text("utf-8") == "{not valid json"
+
+    store.save({"7": Role.Admin})  # writes fresh; the quarantine survives
+    assert quarantined[0].exists()
+    assert RoleStore(path).load() == {"7": Role.Admin}

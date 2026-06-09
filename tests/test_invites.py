@@ -72,3 +72,15 @@ def test_invites_file_is_private(tmp_path):
     InviteStore(path).create(Role.Viewer)
     if os.name != "nt":  # POSIX mode bits only
         assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_corrupt_store_is_quarantined(tmp_path):
+    path = tmp_path / "invites.json"
+    path.write_text("not json", "utf-8")
+    store = InviteStore(path)
+    assert store.pending() == []
+    quarantined = list(tmp_path.glob("invites.json.corrupt-*"))
+    assert len(quarantined) == 1 and quarantined[0].read_text("utf-8") == "not json"
+    # A new invite persists without touching the quarantined original.
+    store.create(Role.Viewer)
+    assert quarantined[0].exists() and path.exists()

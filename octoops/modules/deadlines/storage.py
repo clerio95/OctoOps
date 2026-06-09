@@ -12,11 +12,15 @@ the store.
 
 from __future__ import annotations
 
-import json
-import os
 import secrets
 from datetime import date, datetime
 from pathlib import Path
+
+from octoops.core.logging import get_logger
+from octoops.core.secure_io import quarantine_corrupt
+from octoops.core.storage import JsonStore
+
+log = get_logger("octoops.modules.deadlines.storage")
 
 # Where a record's due date may live, in priority order (sheet-export aliases).
 DATE_KEYS = ("PROXIMA_DATA", "DATA", "DATA_BASE")
@@ -65,28 +69,25 @@ def _normalize(item: dict) -> dict:
 
 
 def load_deadlines(path: str | Path) -> list[dict]:
-    """Read and normalize the records. Returns [] for a missing/corrupt file."""
-    p = Path(path)
-    if not p.exists():
-        return []
-    try:
-        with open(p, encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return []
+    """Read and normalize the records. Returns [] for a missing/corrupt file.
+
+    JsonStore quarantines a corrupt file before treating it as empty (so the
+    next save can't destroy the operator's records); a parseable file with the
+    wrong shape gets the same treatment here.
+    """
+    data = JsonStore(path).load(default=[])
     if not isinstance(data, list):
+        quarantined = quarantine_corrupt(path)
+        log.error(
+            "deadlines.corrupt_quarantined", path=str(path), quarantined=str(quarantined)
+        )
         return []
     return [_normalize(item) for item in data if isinstance(item, dict)]
 
 
 def save_deadlines(path: str | Path, rows: list[dict]) -> None:
     """Atomically write the records as a UTF-8 JSON array (parent dirs created)."""
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(f"{p.name}.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(rows, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, p)
+    JsonStore(path).save(rows)
 
 
 def _new_id(existing: set[str]) -> str:

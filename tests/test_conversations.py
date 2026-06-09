@@ -49,3 +49,43 @@ def test_conversation_expires_after_ttl():
 
     now[0] += 11.0  # now past TTL
     assert store.get(key) is None  # expired and dropped
+
+
+# --- expiry tombstones (timeout feedback) -------------------------------------
+
+
+def _expired_store():
+    """A store whose only conversation has just expired (clock controllable)."""
+    now = [1000.0]
+    store = ConversationStore(ttl_seconds=10.0, clock=lambda: now[0])
+    key = conversation_key(TransportSource.WhatsApp, "u")
+    store.start(key, command="deadlines")
+    now[0] += 11.0
+    assert store.get(key) is None  # expiry detected -> tombstone left behind
+    return store, key, now
+
+
+def test_expired_conversation_leaves_a_tombstone():
+    store, key, _ = _expired_store()
+    assert store.expired_command(key) == "deadlines"  # peek does not consume
+    assert store.expired_command(key) == "deadlines"
+    assert store.pop_expired(key) == "deadlines"      # pop consumes it
+    assert store.pop_expired(key) is None             # one notice per timeout
+
+
+def test_tombstone_expires_after_one_more_ttl():
+    store, key, now = _expired_store()
+    # The tombstone is dated at the moment of expiry (start+ttl = 1010), so a
+    # reply long after the fact gets silence, not a stale notice.
+    now[0] = 1021.0  # > 1010 + ttl
+    assert store.pop_expired(key) is None
+
+
+def test_start_and_end_clear_the_tombstone():
+    store, key, _ = _expired_store()
+    store.start(key, command="deadlines")  # a fresh flow supersedes the timeout
+    assert store.pop_expired(key) is None
+
+    store2, key2, _ = _expired_store()
+    store2.end(key2)
+    assert store2.pop_expired(key2) is None

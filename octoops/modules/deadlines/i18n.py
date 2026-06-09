@@ -55,6 +55,10 @@ _CATALOG: dict[str, dict[str, str]] = {
         "pt-BR": "Responda 1, 2, 3 ou 4 (ou 'cancelar').",
     },
     "cancelled": {"en": "Okay, cancelled.", "pt-BR": "Ok, cancelado."},
+    "expired": {
+        "en": "⏳ That conversation timed out. Send 'deadlines' to start again.",
+        "pt-BR": "⏳ A conversa expirou. Envie 'vencimentos' para começar de novo.",
+    },
     # add flow prompts
     "ask_desc": {
         "en": "📝 What is the deadline? (description)",

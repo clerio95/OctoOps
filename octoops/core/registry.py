@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
 from octoops.core.conversations import ConversationStore
@@ -21,6 +22,7 @@ if TYPE_CHECKING:
     from octoops.core.permissions import Permissions
     from octoops.core.router import Router
     from octoops.core.scheduler import Scheduler
+    from octoops.core.storage import JsonStore
     from octoops.transports import Transport
 
 
@@ -60,6 +62,10 @@ class Registry:
     conversations: ConversationStore = field(default_factory=ConversationStore)
     # Names of successfully loaded modules (for /status and introspection).
     module_names: list[str] = field(default_factory=list)
+    # Modules that loaded but were disabled during registration (e.g. a command
+    # name collision), as "name: reason" strings — surfaced by /status so a
+    # silently-skipped drop-in module is visible to the operator.
+    module_errors: list[str] = field(default_factory=list)
     # One-time invites for onboarding new users; the transport gate redeems them.
     invites: "InviteStore | None" = None
     # The bot's own @username, learned at startup — used to build invite links.
@@ -77,3 +83,15 @@ class ModuleContext:
     registry: Registry
     event_bus: "EventBus"
     scheduler: "Scheduler"
+
+    def store(self, filename: str | None = None, *, private: bool = False) -> "JsonStore":
+        """A JsonStore for this module's data — ``data/<module>.json`` by default.
+
+        The store bundles the persistence safety rails (atomic save, forgiving
+        load, quarantine-on-corrupt) so modules don't hand-roll file I/O.
+        ``private=True`` writes owner-only (0600) for secret-adjacent data.
+        """
+        from octoops.core.storage import JsonStore
+
+        base = self.registry.paths.data if self.registry.paths is not None else Path("data")
+        return JsonStore(base / (filename or f"{self.name}.json"), private=private)

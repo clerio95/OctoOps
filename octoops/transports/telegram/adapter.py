@@ -135,10 +135,19 @@ class TelegramTransport(Transport):
         # always starts fresh, so the user can escape a stuck flow with any command.
         text = message.text.strip()
         key = conversation_key(TransportSource.Telegram, user_id)
-        conv = self._registry.conversations.get(key)
-        if conv is not None and not text.startswith("/"):
+        conversations = self._registry.conversations
+        conv = conversations.get(key)
+        follow_up = conv.command if conv is not None else None
+        if follow_up is None and not text.startswith("/"):
+            # A flow that just timed out gets one last forward, so the owning
+            # module can tell the user it expired instead of the reply silently
+            # vanishing (the module consumes the tombstone via pop_expired).
+            expired = conversations.expired_command(key)
+            if expired is not None and self._router.has_command(expired):
+                follow_up = expired
+        if follow_up is not None and not text.startswith("/"):
             request = Request(
-                command=conv.command,
+                command=follow_up,
                 args=[text],
                 raw_text=message.text,
                 user_id=user_id,

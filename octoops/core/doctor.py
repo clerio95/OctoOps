@@ -194,6 +194,20 @@ def _check_config(
                 f"missing at {bridge} (WhatsApp output disabled until present)",
             )
 
+        # Pairing session: the bridge persists its WhatsApp login in whatsmeow.db
+        # next to the binary's working directory (OCTOOPS_HOME under the scheduled
+        # task). Absence means the QR pairing never happened — WhatsApp will sit
+        # offline until someone scans, so say it here instead of at 2am.
+        session_db = paths.home / "whatsmeow.db"
+        if session_db.is_file():
+            r.ok("WhatsApp session", "paired (whatsmeow.db present)")
+        else:
+            r.warn(
+                "WhatsApp session",
+                "not paired yet — run --setup (or start the bot interactively) "
+                "and scan the QR code",
+            )
+
         for label, port in (
             ("bridge port", config.transport.whatsapp_bridge_port),
             ("callback port", config.transport.octoops_callback_port),

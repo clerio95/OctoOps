@@ -12,7 +12,7 @@ import asyncio
 import time
 from pathlib import Path
 
-from octoops.transports.whatsapp.bridge_client import BridgeClient
+from octoops.transports.whatsapp.bridge_client import BridgeClient, bridge_env
 
 _POLL_INTERVAL = 2.0
 
@@ -59,7 +59,13 @@ async def run_pairing(bridge_path: str, bridge_port: int, *, timeout: float = 12
         return True
 
     print("\nStarting WhatsApp bridge — scan the QR code below with your phone.\n")
-    proc = await asyncio.create_subprocess_exec(str(path))  # inherits stdout (QR)
+    # Inherits stdout (the QR code). The env is the allowlisted minimum — not the
+    # full parent env — and carries the configured port so a non-default
+    # bridge_port works at pairing time too. No token: pairing runs the bridge
+    # unauthenticated on loopback for the duration of the QR scan only.
+    proc = await asyncio.create_subprocess_exec(
+        str(path), env=bridge_env(port=bridge_port)
+    )
     try:
         ok = await wait_for_login(client, timeout)
         print("\nWhatsApp paired successfully." if ok else "\nPairing timed out.")

@@ -14,6 +14,9 @@ How a follow-up message reaches the module differs per transport:
   active, forwards the message to that command instead.
 
 Conversations expire after a TTL so a half-finished flow never wedges a user.
+When one expires, a short-lived tombstone (the owning command) is kept for one
+more TTL so the next message can get a "that conversation timed out" notice
+instead of vanishing into silence — see ``expired_command``/``pop_expired``.
 The store is in-memory only (per process) — a restart simply drops pending
 flows, which is the desired behavior.
 """
@@ -57,6 +60,9 @@ class ConversationStore:
         self._ttl = ttl_seconds
         self._clock = clock
         self._convs: dict[ConvKey, Conversation] = {}
+        # key -> (command, moment the conversation expired). Lets the next
+        # message explain the timeout; pruned after one further TTL.
+        self._expired: dict[ConvKey, tuple[str, float]] = {}
 
     def start(
         self, key: ConvKey, command: str, data: dict[str, Any] | None = None
@@ -66,6 +72,7 @@ class ConversationStore:
             command=command, data=dict(data or {}), updated_at=self._clock()
         )
         self._convs[key] = conv
+        self._expired.pop(key, None)
         return conv
 
     def get(self, key: ConvKey) -> Conversation | None:
@@ -79,6 +86,10 @@ class ConversationStore:
             return None
         if self._clock() - conv.updated_at > self._ttl:
             del self._convs[key]
+            # Tombstone so the next message can explain the timeout. Dated at
+            # the moment of expiry (not detection), so a reply long after the
+            # fact gets silence, not a stale notice.
+            self._expired[key] = (conv.command, conv.updated_at + self._ttl)
             return None
         return conv
 
@@ -90,6 +101,33 @@ class ConversationStore:
 
     def end(self, key: ConvKey) -> None:
         self._convs.pop(key, None)
+        self._expired.pop(key, None)
 
     def active(self, key: ConvKey) -> bool:
         return self.get(key) is not None
+
+    def _fresh_tombstone(self, key: ConvKey) -> str | None:
+        entry = self._expired.get(key)
+        if entry is None:
+            return None
+        command, expired_at = entry
+        if self._clock() - expired_at > self._ttl:
+            del self._expired[key]
+            return None
+        return command
+
+    def expired_command(self, key: ConvKey) -> str | None:
+        """Command of a conversation that expired recently (within one TTL).
+
+        Non-consuming peek — the Telegram transport uses it to decide whether a
+        plain reply should still be forwarded to the owning command so the module
+        can tell the user the flow timed out.
+        """
+        return self._fresh_tombstone(key)
+
+    def pop_expired(self, key: ConvKey) -> str | None:
+        """Like ``expired_command`` but consumes the tombstone, so a module can
+        send exactly one timeout notice per expired flow."""
+        command = self._fresh_tombstone(key)
+        self._expired.pop(key, None)
+        return command

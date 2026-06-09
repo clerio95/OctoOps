@@ -50,6 +50,7 @@ def run_wizard(config_path: str, paths: AppPaths | None = None) -> bool:
     if write_env(state, config_path.parent / ".env") is not None:
         print(f"Wrote {config_path.parent / '.env'} (module secrets, private 0600)")
 
+    _maybe_harden_home(paths)
     _maybe_register_task(state, paths)
     _maybe_write_uninstall(paths)
     _maybe_pair_whatsapp(state, paths)
@@ -89,6 +90,20 @@ def _backup_existing(config_path: Path) -> None:
         print(f"Backed up previous config to {backup}")
     except OSError as exc:
         print(f"Could not back up {config_path} ({exc}); continuing.")
+
+
+def _maybe_harden_home(paths: AppPaths) -> None:
+    """Lock the install dir's Windows ACL down to SYSTEM/Administrators/the
+    operator. POSIX 0600 bits are meaningless on NTFS, so without this the
+    secret-bearing files (config.toml, .env, data/) rely on whatever ACL the
+    folder happened to inherit. Quiet no-op off Windows; best-effort on it."""
+    from octoops.core.secure_io import harden_directory_acl
+
+    ok, message = harden_directory_acl(paths.home)
+    if ok:
+        print(f"Restricted folder permissions on {paths.home} (SYSTEM, Administrators, you).")
+    elif not message.startswith("skipped"):
+        print(f"Could not restrict folder permissions ({message}); continuing.")
 
 
 def _maybe_register_task(state, paths: AppPaths) -> None:

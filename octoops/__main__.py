@@ -146,6 +146,31 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_checks(config_path, paths, verify_token=args.verify_token)
 
+    # One instance per install. Two would fight over Telegram polling (409
+    # conflicts) and the bridge/callback ports; --setup is included so pairing
+    # can't spawn a second bridge while the scheduled task instance is alive.
+    # The OS releases the lock on process death — no stale-lock cleanup needed.
+    from octoops.core.instance_lock import InstanceLock
+
+    lock = InstanceLock(paths.data / "octoops.lock")
+    if not lock.acquire():
+        holder = lock.holder()
+        print(
+            f"OctoOps is already running (pid {holder.get('pid', '?')}, "
+            f"started {holder.get('started', '?')}).\n"
+            "Stop that instance first — if it's the scheduled task: "
+            "schtasks /End /TN OctoOps",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        return _run(args, config_path, paths)
+    finally:
+        lock.release()
+
+
+def _run(args: argparse.Namespace, config_path: Path, paths: AppPaths) -> int:
+    """Setup (if needed), load config, configure logging, and serve."""
     if args.setup or not config_path.is_file():
         from octoops.wizard import run_wizard
 

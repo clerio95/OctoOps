@@ -7,6 +7,8 @@ OctoOps-side /incoming callback acknowledgement.
 import json
 import socket
 
+import asyncio
+
 import aiohttp
 import pytest
 from aiohttp import web
@@ -284,3 +286,107 @@ async def test_incoming_callback_acks_without_routing():
                 assert body == {"ok": True, "routed": False}
     finally:
         await transport._runner.cleanup()
+
+
+# --- unpaired-session visibility -------------------------------------------------
+
+
+class _HealthClient:
+    """Fake bridge client whose logged_in flag the test controls."""
+
+    def __init__(self, logged_in=False):
+        self.logged_in = logged_in
+
+    async def health(self):
+        return {"ok": True, "logged_in": self.logged_in}
+
+    async def close(self):
+        pass
+
+
+class _FakeTelegram:
+    def __init__(self, fail_times=0):
+        self.sent = []
+        self._fail_times = fail_times
+
+    async def send(self, response):
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise RuntimeError("not started")
+        self.sent.append(response)
+
+
+class _DoneProc:
+    returncode = None
+
+
+@pytest.mark.asyncio
+async def test_wait_logged_in_immediate_when_paired(registry):
+    transport = WhatsAppTransport(
+        "/nonexistent", 0, 0, client=_HealthClient(logged_in=True), spawn=False
+    )
+    transport._registry = registry
+    transport._running = True
+    assert await transport._wait_logged_in(_DoneProc()) is True
+
+
+@pytest.mark.asyncio
+async def test_unpaired_notifies_telegram_admin_once(registry, monkeypatch):
+    """Bridge healthy but no session -> the Telegram admin hears about it, once."""
+    import octoops.transports.whatsapp.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "_PAIR_POLL_INTERVAL", 0.01)
+    client = _HealthClient(logged_in=False)
+    telegram = _FakeTelegram()
+    registry.transports["telegram"] = telegram
+
+    transport = WhatsAppTransport("/nonexistent", 0, 0, client=client, spawn=False)
+    transport._registry = registry
+    transport._running = True
+
+    async def flip_after_delay():
+        await asyncio.sleep(0.05)
+        client.logged_in = True
+
+    flip = asyncio.ensure_future(flip_after_delay())
+    assert await transport._wait_logged_in(_DoneProc()) is True
+    await flip
+
+    assert len(telegram.sent) == 1  # notified exactly once across several polls
+    assert "not paired" in telegram.sent[0].text
+    assert "--setup" in telegram.sent[0].text
+
+
+@pytest.mark.asyncio
+async def test_unpaired_notify_retries_until_telegram_is_up(registry, monkeypatch):
+    """Telegram not started on the first poll -> retried, not lost."""
+    import octoops.transports.whatsapp.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod, "_PAIR_POLL_INTERVAL", 0.01)
+    client = _HealthClient(logged_in=False)
+    telegram = _FakeTelegram(fail_times=2)  # first sends raise
+    registry.transports["telegram"] = telegram
+
+    transport = WhatsAppTransport("/nonexistent", 0, 0, client=client, spawn=False)
+    transport._registry = registry
+    transport._running = True
+
+    async def flip_after_delay():
+        await asyncio.sleep(0.08)
+        client.logged_in = True
+
+    flip = asyncio.ensure_future(flip_after_delay())
+    assert await transport._wait_logged_in(_DoneProc()) is True
+    await flip
+    assert len(telegram.sent) == 1  # eventually delivered despite early failures
+
+
+@pytest.mark.asyncio
+async def test_unpaired_notice_is_localized(registry):
+    registry.config.core.language = "pt-BR"
+    telegram = _FakeTelegram()
+    registry.transports["telegram"] = telegram
+    transport = WhatsAppTransport("/nonexistent", 0, 0, spawn=False)
+    transport._registry = registry
+    assert await transport._notify_unpaired() is True
+    assert "não está pareado" in telegram.sent[0].text

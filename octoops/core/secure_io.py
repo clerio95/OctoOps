@@ -9,10 +9,19 @@ replaces the target. POSIX mode bits are best-effort on Windows (NTFS uses ACLs)
 
 from __future__ import annotations
 
+import getpass
 import os
+import subprocess
+import sys
+from datetime import datetime
 from pathlib import Path
 
 _PRIVATE_MODE = 0o600
+
+# Well-known SIDs (locale-proof — "Administrators" is "Administradores" on a
+# pt-BR Windows). SYSTEM runs the Task Scheduler task, so it must keep access.
+_SYSTEM_SID = "*S-1-5-18"
+_ADMINISTRATORS_SID = "*S-1-5-32-544"
 
 
 def write_private_text(path: str | Path, text: str, *, encoding: str = "utf-8") -> Path:
@@ -43,3 +52,57 @@ def write_private_text(path: str | Path, text: str, *, encoding: str = "utf-8") 
     except OSError:
         pass
     return path
+
+
+def quarantine_corrupt(path: str | Path) -> Path | None:
+    """Move an unparseable data file aside as ``<name>.corrupt-<timestamp>``.
+
+    The stores treat a corrupt file as empty so the bot keeps running — but the
+    *next save* would then atomically replace the corrupt file with that empty
+    view, destroying the operator's data forever. Renaming it first preserves
+    the original bytes for recovery. Best-effort: returns the quarantine path,
+    or None if the move failed (callers log either way and continue).
+    """
+    path = Path(path)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    try:
+        os.replace(path, target)
+        return target
+    except OSError:
+        return None
+
+
+def harden_directory_acl(
+    path: str | Path, *, runner=subprocess.run
+) -> tuple[bool, str]:
+    """Restrict a directory's Windows ACL to SYSTEM, Administrators and the
+    current user (inheritance disabled; new grants are inheritable).
+
+    The 0600 mode bits set elsewhere in this module are a no-op on NTFS, so on a
+    shared Windows machine this is what actually protects config.toml, .env,
+    data/access.json and whatsmeow.db. Skipped (not failed) off Windows.
+    Best-effort: returns (ok, message) and never raises; ``runner`` is injectable
+    for tests.
+    """
+    if not sys.platform.startswith("win"):
+        return (False, "skipped: ACL hardening is Windows-only")
+    try:
+        user = getpass.getuser()
+    except Exception:  # noqa: BLE001 - no resolvable user -> grant SIDs only
+        user = ""
+    grantees = [_SYSTEM_SID, _ADMINISTRATORS_SID] + ([user] if user else [])
+    cmd = ["icacls", str(path), "/inheritance:r"]
+    for grantee in grantees:
+        # (OI)(CI)F = full control, inherited by existing and future children.
+        cmd += ["/grant:r", f"{grantee}:(OI)(CI)F"]
+    try:
+        result = runner(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        return (False, "icacls not found on PATH")
+    except Exception as exc:  # noqa: BLE001 - hardening must never block setup
+        return (False, f"icacls failed: {exc}")
+    if result.returncode == 0:
+        return (True, f"restricted ACL on {path} (SYSTEM, Administrators, {user or 'n/a'})")
+    detail = (result.stderr or result.stdout or "").strip()
+    return (False, f"icacls exited {result.returncode}: {detail}")

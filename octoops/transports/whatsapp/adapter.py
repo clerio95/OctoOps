@@ -10,8 +10,10 @@ send() pushes text to each chat in response.whatsapp_chat_ids.
 
 Inbound is OFF by default — /incoming is acknowledged but not routed (WhatsApp
 stays output-only). When inbound is enabled, a message from a whitelisted number
-is routed to exactly ONE configured command (the brain's /ask by default): the
-command name is forced, so a WhatsApp user can never invoke any other command.
+is routed by _resolve_inbound_command: the user's open conversation first, then
+a command-declared whatsapp_keyword in the first word, then the configured
+default command (the brain's /ask by default). The command is never taken from
+the message itself, so a WhatsApp user can't invoke arbitrary commands.
 Non-whitelisted senders are dropped silently (the bot stays invisible to randoms,
 mirroring the Telegram allowlist gate).
 """
@@ -21,19 +23,21 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
-import os
 import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
+import aiohttp
 from aiohttp import web
 
+from octoops.core.conversations import conversation_key
 from octoops.core.logging import get_logger
+from octoops.core.secure_io import write_private_text
 from octoops.modules.status import build_status_text
 from octoops.shared.models import Request, Response, Role, TransportSource
 from octoops.transports import Transport
 
-from .bridge_client import BridgeClient
+from .bridge_client import BridgeClient, bridge_env
 from .formatter import format_text
 
 if TYPE_CHECKING:
@@ -45,6 +49,7 @@ _log = get_logger("octoops.transports.whatsapp")
 _MAX_BACKOFF = 60
 _HEALTH_RETRIES = 30
 _HEALTH_INTERVAL = 1.0
+_PAIR_POLL_INTERVAL = 30.0
 _SHUTDOWN_TIMEOUT = 3.0
 
 # Inbound payload field names we tolerate from the bridge (it's supplied
@@ -115,19 +120,76 @@ class WhatsAppTransport(Transport):
         self._running = True
         self._router = router
         self._registry = registry
-        # Mint the shared bridge secret for this process and arm the client with it;
-        # _spawn_bridge passes the same value to the sidecar via BRIDGE_TOKEN.
-        self._bridge_token = secrets.token_urlsafe(32)
+        # Arm the client with the shared bridge secret; _spawn_bridge passes the
+        # same value to the sidecar via BRIDGE_TOKEN.
+        self._bridge_token = self._ensure_bridge_token()
         self._client.set_auth_token(self._bridge_token)
         try:
             await self._start_callback_server()
             if self._spawn:
+                await self._reap_stale_bridge()
                 self._supervisor = asyncio.create_task(self._supervise_bridge())
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             pass
         finally:
             await self._teardown()
+
+    def _ensure_bridge_token(self) -> str:
+        """The shared bridge secret, persisted per-install to data/bridge.token.
+
+        Persisting (rather than minting per process) lets a new OctoOps process
+        authenticate to a bridge left running by a previous one — which is what
+        makes _reap_stale_bridge able to shut an orphan down instead of
+        deadlocking against it (the orphan holds the port; a per-process token
+        could never match it). Ephemeral fallback when no data dir is configured.
+        """
+        paths = self._registry.paths if self._registry is not None else None
+        if paths is None:
+            return secrets.token_urlsafe(32)
+        token_path = paths.data / "bridge.token"
+        try:
+            existing = token_path.read_text("utf-8").strip()
+            if existing:
+                return existing
+        except OSError:
+            pass
+        token = secrets.token_urlsafe(32)
+        try:
+            write_private_text(token_path, token + "\n")
+        except OSError as exc:
+            _log.warning("whatsapp.bridge_token_persist_failed", error=str(exc))
+        return token
+
+    async def _reap_stale_bridge(self) -> None:
+        """Shut down a bridge left over from a previous run before spawning ours.
+
+        On Windows, killing OctoOps does not kill the Go sidecar; the orphan
+        keeps the bridge port, so our own spawn could never bind and the
+        supervisor would retry forever. The persisted token authenticates us to
+        the orphan so it can be stopped cleanly; a bridge holding the port with
+        an unknown token is reported loudly instead of failing silently.
+        """
+        try:
+            await self._client.health()
+        except aiohttp.ClientResponseError as exc:
+            if exc.status in (401, 403):
+                _log.error(
+                    "whatsapp.stale_bridge_foreign",
+                    port=self._bridge_port,
+                    hint="a bridge with an unknown token holds the port — "
+                    "kill the old whatsmeow-bridge process manually",
+                )
+            return
+        except Exception:  # noqa: BLE001 - nothing listening; the normal case
+            return
+        _log.warning("whatsapp.stale_bridge_found", port=self._bridge_port)
+        try:
+            await self._client.shutdown()
+            await asyncio.sleep(0.5)  # let the orphan release the port
+            _log.info("whatsapp.stale_bridge_stopped")
+        except Exception as exc:  # noqa: BLE001 - best effort
+            _log.warning("whatsapp.stale_bridge_stop_failed", error=str(exc))
 
     async def send(self, response: "Response") -> None:
         targets = response.whatsapp_chat_ids
@@ -176,11 +238,7 @@ class WhatsAppTransport(Transport):
 
         # Default: WhatsApp is output-only. Accept and acknowledge; do not route.
         # Message bodies are never logged.
-        if (
-            not self._inbound_enabled
-            or self._router is None
-            or not self._router.has_command(self._command)
-        ):
+        if not self._inbound_enabled or self._router is None:
             _log.info("whatsapp.incoming_ack")
             return web.json_response(self._NOT_ROUTED)
 
@@ -200,13 +258,20 @@ class WhatsAppTransport(Transport):
             _log.info("whatsapp.incoming_dropped", reason="not_allowed")
             return web.json_response(self._NOT_ROUTED)
 
-        # Force the configured command: the inbound text is ALWAYS the argument to
-        # that one command, so a WhatsApp user can only ever reach the brain.
+        user_id = normalize_number(sender)
+        command = self._resolve_inbound_command(user_id, text)
+        if command is None:
+            _log.info("whatsapp.incoming_ignored", reason="no_route")
+            return web.json_response(self._NOT_ROUTED)
+
+        # The inbound text is ALWAYS the argument to the resolved command — a
+        # WhatsApp user can only ever reach a declared keyword command, their own
+        # open conversation, or the configured default. Never arbitrary commands.
         req = Request(
-            command=self._command,
+            command=command,
             args=[text],
             raw_text=text,
-            user_id=normalize_number(sender),
+            user_id=user_id,
             chat_id=sender,
             source=TransportSource.WhatsApp,
         )
@@ -222,8 +287,41 @@ class WhatsAppTransport(Transport):
                     text=response.text, chat_id=sender, whatsapp_chat_ids=[sender]
                 )
             )
-        _log.info("whatsapp.incoming_routed", command=self._command)
+        _log.info("whatsapp.incoming_routed", command=command)
         return web.json_response({"ok": True, "routed": True})
+
+    def _resolve_inbound_command(self, user_id: str, text: str) -> str | None:
+        """Which command should this inbound WhatsApp message reach?
+
+        Priority: the user's open conversation (so multi-step flows keep all
+        their replies), then a just-expired conversation (one stale-reply
+        forward so the owning module can explain the timeout), then a declared
+        ``whatsapp_keywords`` match on the first word, then the configured
+        default command. This is what lets several interactive modules share
+        WhatsApp: each declares keywords, everything else flows to the default
+        (typically the brain's /ask). Returns None when nothing is routable.
+        """
+        router = self._router
+        if router is None:
+            return None
+        if self._registry is not None:
+            key = conversation_key(TransportSource.WhatsApp, user_id)
+            conv = self._registry.conversations.get(key)
+            if conv is not None and router.has_command(conv.command):
+                return conv.command
+            expired = self._registry.conversations.expired_command(key)
+            if expired is not None and router.has_command(expired):
+                return expired
+        parts = text.split()
+        token = parts[0].lstrip("/").lower() if parts else ""
+        if token:
+            for name, cmd_def, _module in router.entries():
+                for keyword in getattr(cmd_def, "whatsapp_keywords", ()) or ():
+                    if token == keyword.lstrip("/").lower():
+                        return name
+        if self._command and router.has_command(self._command):
+            return self._command
+        return None
 
     # --- bridge sidecar supervision -------------------------------------------
 
@@ -238,8 +336,9 @@ class WhatsAppTransport(Transport):
             self._proc = proc
             if await self._await_health():
                 await self._register_callback()
-                await self._refresh_groups()
-                await self._notify_admins()
+                if await self._wait_logged_in(proc):
+                    await self._refresh_groups()
+                    await self._notify_admins()
                 backoff = 1
             await proc.wait()
             self._proc = None
@@ -255,13 +354,11 @@ class WhatsAppTransport(Transport):
             _log.error("whatsapp.bridge_missing", path=str(path))
             return None
         try:
-            # Hand the sidecar the shared secret (and the configured port) via the
-            # environment; the bridge enforces the token on every endpoint.
-            env = {
-                **os.environ,
-                "BRIDGE_TOKEN": self._bridge_token,
-                "BRIDGE_PORT": str(self._bridge_port),
-            }
+            # Hand the sidecar the shared secret (and the configured port) via a
+            # minimal allowlisted environment — never the full parent env, which
+            # may hold module secrets; the bridge enforces the token on every
+            # endpoint.
+            env = bridge_env(token=self._bridge_token, port=self._bridge_port)
             proc = await asyncio.create_subprocess_exec(str(path), env=env)
             _log.info("whatsapp.bridge_spawned", pid=proc.pid)
             return proc
@@ -283,6 +380,62 @@ class WhatsAppTransport(Transport):
             await asyncio.sleep(_HEALTH_INTERVAL)
         _log.warning("whatsapp.health_timeout")
         return False
+
+    async def _wait_logged_in(self, proc: asyncio.subprocess.Process) -> bool:
+        """Wait until the bridge session is paired; nudge the operator meanwhile.
+
+        A healthy bridge with no WhatsApp session (first boot before pairing, a
+        logged-out session) previously just sat there invisibly: the QR code went
+        to a truncated stdout log, the startup notify failed, and groups were
+        never fetched after a later pairing. Now: poll health until logged_in,
+        tell the Telegram admin once what's wrong and how to fix it, and run the
+        normal post-login steps when pairing completes.
+        """
+        notified = False
+        while self._running and proc.returncode is None:
+            try:
+                health = await self._client.health()
+            except Exception:  # noqa: BLE001 - bridge died/restarting; supervisor handles it
+                return False
+            if health.get("logged_in"):
+                return True
+            if not notified:
+                _log.warning("whatsapp.not_paired")
+                notified = await self._notify_unpaired()
+            await asyncio.sleep(_PAIR_POLL_INTERVAL)
+        return False
+
+    async def _notify_unpaired(self) -> bool:
+        """Tell the Telegram admin that WhatsApp needs pairing (best-effort).
+
+        Returns True once delivered so the caller stops retrying; False when the
+        Telegram transport isn't up yet (it retries on the next pairing poll).
+        """
+        reg = self._registry
+        if reg is None:
+            return True  # nothing to notify through; don't keep trying
+        telegram = reg.transports.get("telegram")
+        if telegram is None:
+            return False
+        pt = reg.config.core.language.strip().lower().startswith("pt")
+        text = (
+            "⚠ WhatsApp não está pareado (sem sessão ativa). Rode "
+            "`python -m octoops --setup` na máquina e escaneie o QR code. "
+            "O WhatsApp fica offline até lá."
+            if pt
+            else "⚠ WhatsApp is not paired (no active session). Run "
+            "`python -m octoops --setup` on the machine and scan the QR code. "
+            "WhatsApp stays offline until then."
+        )
+        try:
+            await telegram.send(
+                Response(text=text, chat_id=reg.config.telegram.admin_chat_id)
+            )
+            _log.info("whatsapp.unpaired_admin_notified")
+            return True
+        except Exception as exc:  # noqa: BLE001 - telegram may not be started yet
+            _log.warning("whatsapp.unpaired_notify_failed", error=str(exc))
+            return False
 
     async def _refresh_groups(self) -> None:
         """Fetch joined groups from the bridge, cache on registry, write to data/."""
@@ -325,12 +478,22 @@ class WhatsAppTransport(Transport):
             )
         cmd = self._command.lstrip("/").lower()
         module = None
+        keywords: set[str] = set()
         if self._router is not None:
-            for name, _cmd_def, owning_module in self._router.entries():
+            for name, cmd_def, owning_module in self._router.entries():
                 if name == cmd:
                     module = owning_module
-                    break
+                for keyword in getattr(cmd_def, "whatsapp_keywords", ()) or ():
+                    keywords.add(keyword.lstrip("/").lower())
+        keyword_list = ", ".join(sorted(keywords))
         if module is None:
+            if keywords:
+                # No default command, but keyword-routed modules are reachable.
+                return (
+                    f"💬 WhatsApp: comandos por palavra-chave: {keyword_list}."
+                    if pt
+                    else f"💬 WhatsApp: keyword commands: {keyword_list}."
+                )
             return (
                 f"⚠ WhatsApp: o comando de entrada /{cmd} está ativado mas não foi "
                 "registrado — verifique [transport] whatsapp_command e [core] language."
@@ -338,11 +501,18 @@ class WhatsAppTransport(Transport):
                 else f"⚠ WhatsApp: inbound command /{cmd} is enabled but not "
                 "registered — check [transport] whatsapp_command and [core] language."
             )
-        return (
+        line = (
             f"💬 WhatsApp: envie uma mensagem para usar /{cmd} ({module})."
             if pt
             else f"💬 WhatsApp: send a message to use /{cmd} ({module})."
         )
+        if keywords:
+            line += (
+                f" Palavras-chave: {keyword_list}."
+                if pt
+                else f" Keywords: {keyword_list}."
+            )
+        return line
 
     async def _notify_admins(self) -> None:
         if not self._admin_chat_ids:

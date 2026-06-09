@@ -13,9 +13,54 @@ an older bridge (or the interactive pairing flow) keeps working unchanged.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import aiohttp
+
+# Environment variables forwarded when spawning the bridge sidecar. The parent
+# process environment can hold module secrets (BRAIN_API_KEY, anything loaded
+# from .env) that the bridge has no business seeing, so the subprocess gets an
+# allowlisted minimum — PATH/temp/locale, the Windows system vars the Go runtime
+# needs, and TLS/proxy overrides — plus the BRIDGE_* values OctoOps sets itself.
+_ENV_ALLOWLIST = {
+    "PATH",
+    "PATHEXT",
+    "COMSPEC",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PROGRAMDATA",
+    "TZ",
+    "LANG",
+    "LC_ALL",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+}
+
+
+def bridge_env(*, token: str = "", port: int | None = None) -> dict[str, str]:
+    """Minimal environment for the bridge subprocess (never the full parent env).
+
+    Allowlist matching is case-insensitive (Windows env keys come in arbitrary
+    case; lowercase proxy vars are common on Linux), preserving the original key.
+    """
+    env = {k: v for k, v in os.environ.items() if k.upper() in _ENV_ALLOWLIST}
+    if token:
+        env["BRIDGE_TOKEN"] = token
+    if port is not None:
+        env["BRIDGE_PORT"] = str(port)
+    return env
 
 
 class BridgeClient:

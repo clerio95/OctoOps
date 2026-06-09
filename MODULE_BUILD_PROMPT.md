@@ -44,10 +44,11 @@ Scheduler ─(cron)─▶ your job handler            Event Bus ─▶ your list
   their role, calls your handler, sends your `Response` back.
 - **WhatsApp is push-first and optional.** Modules may *push* to WhatsApp, but it
   may be disabled — always check `transports.get("whatsapp")` for `None`. There is
-  also an **optional inbound path**, but it routes every message from a whitelisted
-  number to **one** configured command (`transport.whatsapp_command`) — a WhatsApp
-  user can never reach the rest of the bot. If you want your command usable over
-  WhatsApp, see §5b (conversations) for the single-command + keyword-gate pattern.
+  also an **optional inbound path**: a whitelisted sender's message routes to their
+  open conversation, then to a command that declared a matching `whatsapp_keywords`
+  first word, then to the configured default (`transport.whatsapp_command`) — never
+  to an arbitrary command from the message. To make your command usable over
+  WhatsApp, declare `whatsapp_keywords` on it and see §5b.
 - **The core is domain-neutral.** All business logic lives in modules. Modules
   never import each other — they communicate via the **event bus**.
 - **Modules can be conversational.** Beyond one-shot `/command → Response`, a module
@@ -78,7 +79,9 @@ A module is loaded on the next restart **only if all of these hold**:
    fails to import or whose `load()` raises is **logged and skipped** — the rest of
    the bot still starts (`module.load_failed`).
 6. **No duplicate command names.** Command names share one global namespace; a
-   duplicate is **fatal at startup** (`RouterError`). Name your commands distinctly.
+   module declaring a name that's already taken is **disabled at startup** (its
+   commands are rolled back, the reason shows in `/status` as "disabled: ..." and
+   in the `module.disabled` log). Name your commands distinctly.
 
 Then: **restart the bot.** Confirm with `/status` (it lists loaded modules) or the
 startup log line `module.loaded module=<name> ...`.
@@ -138,8 +141,11 @@ class CommandDef:
     name: str                 # matched case-insensitively, leading "/" stripped
     description: str
     min_role: Role            # Role.Viewer | Role.Operator | Role.Admin
-    handler: CommandHandler   # async (Request, ModuleContext) -> Response
+    handler: CommandHandler   # async (Request, ModuleContext) -> Response | None
+                              #   (None = "no reply" — the transports send nothing)
     ai_invokable: bool = False # opt-in to the MCP/AI surface; default OFF
+    whatsapp_keywords: list[str] = []  # first-word triggers for WhatsApp inbound
+                              #   routing (see §5b); default = not keyword-reachable
 
 @dataclass
 class JobDef:
@@ -166,7 +172,7 @@ class ConfigField:
 ### Handler signatures (all `async`)
 
 ```python
-async def my_command(request: Request, ctx: ModuleContext) -> Response: ...
+async def my_command(request: Request, ctx: ModuleContext) -> Response | None: ...
 async def my_job(ctx: ModuleContext) -> None: ...
 async def my_listener(payload, ctx: ModuleContext) -> None: ...
 async def my_startup(ctx: ModuleContext) -> None: ...   # also on_shutdown
@@ -174,7 +180,8 @@ async def my_startup(ctx: ModuleContext) -> None: ...   # also on_shutdown
 
 `Request` = `command, args: list[str], raw_text, user_id, chat_id, source`.
 `Response(text, chat_id, reply_to=None, mirror_to_whatsapp=False, whatsapp_chat_ids=[])`.
-Always return `Response(text=..., chat_id=request.chat_id)` from a command.
+Return `Response(text=..., chat_id=request.chat_id)` from a command; return `None`
+only when the command must stay silent (e.g. the WhatsApp keyword gate, §5b).
 
 ---
 
@@ -232,6 +239,11 @@ ctx.registry.router.entries()        # [(command_name, CommandDef, owning_module
 # --- multi-step conversations (ask follow-up questions) — see §5b ---
 ctx.registry.conversations           # ConversationStore (per-user flow state)
 
+# --- persistence: a JSON document under data/ (see "Persistence" below) ---
+ctx.store()                          # JsonStore at data/<module>.json
+ctx.store("custom.json")             # custom filename, same data dir
+ctx.store(private=True)              # owner-only 0600 writes (secret-adjacent data)
+
 # --- optional: structured logging (core infra, fine to use) ---
 from octoops.core.logging import get_logger
 log = get_logger("octoops.modules.myfeature")
@@ -243,6 +255,16 @@ strings from a small per-module catalog. You may also localize a command's *name
 and a module's `ModuleRegistration(name=...)` from it. The `deadlines` module
 (command `/deadlines` in EN, `/vencimentos` in pt-BR) and `help` (`/help` + `/ajuda`)
 are the reference pattern — both keep a tiny `i18n.py` with `tr(lang, key, **kw)`.
+
+**Persistence.** If your module keeps state across restarts, use `ctx.store()` —
+do **not** hand-roll file I/O. `store.load(default=...)` returns the parsed JSON
+(missing file → your default; a corrupt file is *quarantined* to
+`<name>.corrupt-<timestamp>` first, so a later save can never destroy the
+operator's data) and `store.save(data)` writes atomically (temp file +
+`os.replace`). Keep your own schema inside the document and validate the shape on
+load. The runtime is a single event loop, so a synchronous load-modify-save in a
+handler is effectively serialized — but if you move I/O to a thread or background
+task, add your own locking. See `deadlines/storage.py` for a worked example.
 
 `ctx.event_bus` and `ctx.scheduler` are also exposed directly on `ctx` (same
 instances as on `ctx.registry`).
@@ -278,7 +300,8 @@ async def handle(request: Request, ctx: ModuleContext) -> Response:
 ```
 
 API: `store.start(key, command, data={})`, `store.get(key) -> Conversation | None`
-(holds `.command` and a free-form `.data` dict), `store.touch(key)`, `store.end(key)`.
+(holds `.command` and a free-form `.data` dict), `store.touch(key)`, `store.end(key)`,
+`store.pop_expired(key) -> str | None` (see the timeout note below).
 State is **in-memory per process** (a restart drops open flows — that's intended).
 
 **How a follow-up message reaches you differs per transport — design for both:**
@@ -287,13 +310,25 @@ State is **in-memory per process** (a restart drops open flows — that's intend
   (`3`, a date, …) are routed back to the owning command automatically **while a
   conversation is open** for that user. A `/`-message always starts fresh (the
   user's escape hatch). So you don't need to do anything special.
-- **WhatsApp inbound.** *Every* message from a whitelisted number is forced to the
-  one configured command — so your handler is always re-entered, which is what makes
-  the flow work there. But it also means a bare "oi" would trigger you. The
-  convention (see `deadlines`) is a **keyword gate**: on a *fresh* message
-  (`conv is None`) when `request.source is TransportSource.WhatsApp`, only engage if
-  the text starts with your keyword; otherwise return `Response(text="")` (an empty
-  reply is not sent — stay quiet). An open conversation consumes every message.
+- **WhatsApp inbound.** Messages from whitelisted numbers are routed by priority:
+  the user's **open conversation** first (so your mid-flow replies always reach
+  you), then a **declared keyword** — set `whatsapp_keywords=["myword"]` on your
+  `CommandDef` and any fresh message whose first word matches is routed to you —
+  then the configured *default* command (`[transport] whatsapp_command`, usually
+  the brain's `/ask`). Declare keywords and several interactive modules can share
+  WhatsApp. If your command might also BE the default, keep a module-side keyword
+  gate too (see `deadlines`): on a fresh message (`conv is None`) from
+  `TransportSource.WhatsApp` that doesn't start with your keyword, return `None`
+  (a handler may return `None` to mean "no reply" — the transports send nothing).
+
+**Timeouts must not be silent.** When a flow expires (10-min TTL) the store keeps
+a short-lived tombstone; `store.pop_expired(key)` returns the owning command once
+(within one further TTL) and then consumes it. On a fresh entry, check it and send
+a "that conversation timed out" notice instead of ignoring the user's stale reply.
+Both transports forward one such stale reply to your command for exactly this
+purpose (on WhatsApp the expired conversation outranks keyword/default routing
+for that one message). See `deadlines` for the worked pattern (notice once, then
+back to silence/keyword-gating).
 
 Always support a **cancel** word, and validate each step (re-prompt on bad input).
 The `deadlines` module is the full worked example (menu → add/edit/delete, EN/pt-BR,
@@ -594,4 +629,5 @@ Run: `uv run --extra mcp pytest -q` (all green before you call it done).
 - `help` — command introspection via `ctx.registry.router` (a role-filtered listing).
 - `brain` — config fields + a `Password`/env-var secret + an outbound AI call.
 - `deadlines` — a full multi-step conversation (menu → add/edit/delete), EN/pt-BR
-  localization, JSON persistence, and the WhatsApp single-command + keyword gate.
+  localization, JSON persistence (`JsonStore`), and WhatsApp keyword routing
+  (`whatsapp_keywords`) plus the module-side keyword gate.

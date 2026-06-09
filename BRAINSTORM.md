@@ -27,9 +27,11 @@ MCP server (optional) ──▶ exposes your opt-in commands as AI tools + read-
 - **Telegram is the control plane.** Operators type commands; the Router checks
   their role and calls your handler; the reply goes back to Telegram.
 - **WhatsApp is push-first.** Modules can *push* messages to WhatsApp chats (e.g.
-  from a scheduled job). There's also an *optional* inbound path, but it routes
-  every message from a whitelisted number to **one** configured command — so a
-  WhatsApp user can drive a single module flow (e.g. `deadlines`), never the whole bot.
+  from a scheduled job). There's also an *optional* inbound path: a message from a
+  whitelisted number routes to the sender's open conversation, then to a command
+  that declared a matching `whatsapp_keywords` first word, then to the configured
+  default command — never to an arbitrary command from the message. Several
+  interactive modules can share WhatsApp by declaring keywords.
 - **The core is domain-neutral.** All business logic lives in modules. Modules
   never import each other — they talk via the **event bus**.
 - **Roles:** `Viewer < Operator < Admin`. Every command declares a `min_role`.
@@ -134,7 +136,7 @@ Every module idea is some combination of these. Ask: *which surfaces does this u
    guided "add"/"edit" flow) instead of taking everything on one line. Drive it
    with `ctx.registry.conversations` (a per-user state machine; see
    `MODULE_BUILD_PROMPT.md` §5b and the `deadlines` module). Works on Telegram and,
-   via the single-command inbound + a keyword gate, on WhatsApp.
+   via keyword routing (`CommandDef.whatsapp_keywords`), on WhatsApp.
 
 ---
 
@@ -160,9 +162,9 @@ multi-step conversation (`ctx.registry.conversations`), introspect the command s
 >   spinning up its own. Likely answer: add a *shared* client/helper to the
 >   `Registry` so modules borrow it (like they borrow the WhatsApp transport).
 >   Config already hints at this (`IpAddress`, `FilePath` field kinds exist).
-> - **Persistent storage.** There's no DB yet. Options: per-module files under
->   `ctx.registry.paths.data`, or a shared store added to the registry. Decide
->   before building anything stateful.
+> - **Persistent storage. RESOLVED:** use `ctx.store()` — a per-module `JsonStore`
+>   at `data/<module>.json` with atomic saves and corrupt-file quarantine built in
+>   (see `MODULE_BUILD_PROMPT.md` §5 "Persistence"). Don't hand-roll file I/O.
 > - **Telegram → WhatsApp mirror routing.** The plumbing exists
 >   (`Response.mirror_to_whatsapp` / `whatsapp_chat_ids`), but *which* response
 >   goes to *which* WA chat is deliberately unspecified. A "relay/routing"
@@ -213,7 +215,7 @@ Min role: <viewer | operator | admin>
 
 - Does it fit the **module contract** (commands/jobs/listeners/config)? If it needs
   something the contract doesn't offer, it may be a *core/registry* change first.
-- Does it need an **outbound client** or **storage**? → resolve the open question above.
+- Does it need **storage**? → `ctx.store()`. An **outbound client**? → still an open question above.
 - Does it cross modules? → it must go through the **event bus**, not imports.
 - Is it safe to **expose to AI**? Only mark read-only / low-risk commands `ai_invokable`.
 - What **role** should gate it? Default to the least privilege that works.
@@ -361,8 +363,9 @@ an operator confirms — they don't self-promote from observation to fact.
 
 ## Open decisions
 
-- Storage detail: plain folder + git vs. a small versioned store on the `Registry`
-  (the BRAINSTORM "persistent storage" open question — the brain is its first concrete consumer).
+- Storage detail: plain folder + git vs. building on the core `JsonStore`
+  (`ctx.store()` now exists for per-module JSON; a folder-of-markdown brain may
+  still want its own layout + git audit).
 - Privacy: what may leave the box if an *external* AI reads the brain? (redaction lines.)
 - Who may write ground-truth, and how onboarding re-runs handle conflicts.
 - Whether `brain_*` tools live in a dedicated `brain` module or in the core MCP surface.

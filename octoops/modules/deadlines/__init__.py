@@ -13,7 +13,10 @@ The flow is a per-user state machine driven by the core ConversationStore; each
 reply advances it. On Telegram the user types the command; on WhatsApp inbound,
 where every message is forced to one command, a *fresh* message must start with
 the keyword ("vencimentos"/"deadlines") to open the menu — otherwise the bot
-stays quiet. An in-progress conversation always consumes the next message.
+stays quiet (the handler returns None: no reply). An in-progress conversation
+always consumes the next message. A flow that times out (10-min TTL) gets one
+"conversation expired" notice on the user's next stale reply, on both transports,
+instead of silence.
 
 Records live in a JSON file (see storage.py). Respects the module contract:
 declares only via load(), touches only ctx, imports no other module, never
@@ -114,8 +117,17 @@ def load(ctx: ModuleContext) -> ModuleRegistration:
     return ModuleRegistration(
         name=tr(lang, "display"),
         commands=[
-            CommandDef("deadlines", desc, Role.Operator, handle),
-            CommandDef("vencimentos", desc, Role.Operator, handle),
+            # whatsapp_keywords let the transport route "deadlines …" /
+            # "vencimentos …" here even when another module (e.g. brain) is the
+            # configured default inbound command.
+            CommandDef(
+                "deadlines", desc, Role.Operator, handle,
+                whatsapp_keywords=["deadlines"],
+            ),
+            CommandDef(
+                "vencimentos", desc, Role.Operator, handle,
+                whatsapp_keywords=["vencimentos"],
+            ),
         ],
         config_fields=[
             ConfigField(
@@ -221,7 +233,7 @@ def _show_all(ctx: ModuleContext, lang: str) -> str:
 # --- conversation handler ----------------------------------------------------
 
 
-async def handle(request: Request, ctx: ModuleContext) -> Response:
+async def handle(request: Request, ctx: ModuleContext) -> Response | None:
     lang = _lang(ctx)
     store = ctx.registry.conversations
     key = conversation_key(request.source, request.user_id)
@@ -237,11 +249,20 @@ async def handle(request: Request, ctx: ModuleContext) -> Response:
 
     conv = store.get(key)
     if conv is None:
-        # Fresh invocation. On WhatsApp every message is forced to this command,
-        # so require the trigger keyword to open the menu; otherwise stay silent
-        # (an empty reply is not sent). Telegram sends the command explicitly.
-        if request.source is TransportSource.WhatsApp and not _is_trigger(text):
-            return reply("")
+        # If a flow just timed out, the user gets exactly one notice saying so
+        # (consuming the tombstone) instead of their stale reply vanishing.
+        expired = store.pop_expired(key) is not None
+        if request.source is TransportSource.WhatsApp:
+            # Every WhatsApp message is forced to this command, so a fresh one
+            # must carry the trigger keyword to open the menu; anything else is
+            # not for us — explain a timeout once, otherwise stay silent
+            # (returning None sends nothing).
+            if not _is_trigger(text):
+                return reply(tr(lang, "expired")) if expired else None
+        elif expired and not request.raw_text.lstrip().startswith("/"):
+            # Telegram forwarded a stale reply to us (see the adapter); a real
+            # /command after a timeout just opens the menu as usual.
+            return reply(tr(lang, "expired"))
         store.start(key, command=request.command, data={"step": _MENU})
         return reply(tr(lang, "menu", days=_nearest_days(ctx)))
 

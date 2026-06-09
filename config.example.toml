@@ -15,13 +15,15 @@ octoops_callback_port = 3001
 # connects. Format: digits only or full JID, e.g. "5511999998888" or
 # "5511999998888@s.whatsapp.net". Leave empty for no WhatsApp startup notification.
 whatsapp_admin_chat_ids = []             # e.g. ["5511999998888"]
-# Optional inbound: let whitelisted WhatsApp numbers message the embedded brain.
-# Off by default — WhatsApp stays output-only. When on, every inbound message
-# from an allowed number is routed to ONE command (whatsapp_command), so a
-# WhatsApp user can only ever reach the brain — never any other command.
+# Optional inbound: let whitelisted WhatsApp numbers message the bot.
+# Off by default — WhatsApp stays output-only. When on, a message from an
+# allowed number is routed by priority: the user's open conversation, then a
+# command whose declared keyword matches the first word (e.g. "vencimentos"),
+# then the DEFAULT command below. The command never comes from the message
+# itself, so a WhatsApp user can't invoke arbitrary commands.
 whatsapp_inbound_enabled = false
 whatsapp_allow = []                  # allowed numbers, e.g. ["5511999998888"]
-whatsapp_command = "ask"             # the single command inbound text is routed to
+whatsapp_command = "ask"             # default command for non-keyword messages
 whatsapp_role = "operator"           # role inbound WhatsApp users are treated as
 
 [core]
@@ -73,7 +75,6 @@ max_tokens  = 1024
 # adding a new one (asked one field at a time). Works on Telegram and WhatsApp.
 file_path    = "data/deadlines.json"  # JSON store for the records (base-dir-relative)
 nearest_days = 15                     # window for the "nearest deadlines" option
-# To drive this over WhatsApp, enable inbound above and point whatsapp_command at
-# the SAME command name for your language, e.g.:
-#   whatsapp_inbound_enabled = true
-#   whatsapp_command = "deadlines"     # or "vencimentos" when language = "pt-BR"
+# Over WhatsApp this module is keyword-routed: with inbound enabled, any
+# message starting with "deadlines" or "vencimentos" opens it — no need to make
+# it the whatsapp_command (the brain can stay the default).

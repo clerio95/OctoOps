@@ -66,6 +66,30 @@ def test_load_corrupt_file_is_empty(tmp_path):
     assert storage.load_deadlines(path) == []
 
 
+def test_corrupt_file_is_quarantined_so_adds_cannot_destroy_it(tmp_path):
+    """A hand-edit gone wrong (stray comma, BOM) must never be silently erased
+    by the next add: the corrupt original is moved aside first."""
+    path = tmp_path / "d.json"
+    path.write_text('[{"DESCRICAO": "IPVA"', encoding="utf-8")  # truncated JSON
+
+    assert storage.load_deadlines(path) == []
+    quarantined = list(tmp_path.glob("d.json.corrupt-*"))
+    assert len(quarantined) == 1
+    assert "IPVA" in quarantined[0].read_text(encoding="utf-8")
+
+    saved = storage.add_deadline(path, {"descricao": "new", "proxima_data": "01/01/2030"})
+    assert saved["ID"]
+    assert quarantined[0].exists()  # the original data survives the new write
+    assert len(storage.load_deadlines(path)) == 1
+
+
+def test_wrong_shape_file_is_quarantined(tmp_path):
+    path = tmp_path / "d.json"
+    path.write_text('{"not": "a list"}', encoding="utf-8")
+    assert storage.load_deadlines(path) == []
+    assert len(list(tmp_path.glob("d.json.corrupt-*"))) == 1
+
+
 def test_upcoming_filters_window_and_sorts():
     today = date(2026, 1, 10)
     rows = [
@@ -252,7 +276,7 @@ def _wa(ctx, text) -> Request:
 async def test_whatsapp_non_keyword_is_silent(tmp_path):
     ctx = _ctx(tmp_path)
     resp = await handle(_wa(ctx, "oi"), ctx)
-    assert resp.text == ""  # empty -> the transport sends nothing
+    assert resp is None  # None -> no reply is sent at all
 
 
 async def test_whatsapp_keyword_opens_menu(tmp_path):
@@ -268,6 +292,67 @@ async def test_whatsapp_active_conversation_consumes_any_message(tmp_path):
     # Now "oi" is taken as input (menu choice), not gated/silenced.
     text = (await handle(_wa(ctx, "oi"), ctx)).text
     assert "1, 2, 3 or 4" in text  # invalid menu choice -> reprompt (i.e. consumed)
+
+
+# --- conversation timeout feedback ---------------------------------------------
+
+
+def _fake_clock_store(ctx, ttl=10.0):
+    from octoops.core.conversations import ConversationStore
+
+    now = [1000.0]
+    ctx.registry.conversations = ConversationStore(
+        ttl_seconds=ttl, clock=lambda: now[0]
+    )
+    return now
+
+
+async def test_whatsapp_expired_flow_notice_once_then_silent(tmp_path):
+    ctx = _ctx(tmp_path)
+    now = _fake_clock_store(ctx)
+    await handle(_wa(ctx, "vencimentos"), ctx)  # menu open
+    now[0] += 11.0  # flow times out
+
+    # The stale reply gets one "conversation expired" notice...
+    resp = await handle(_wa(ctx, "3"), ctx)
+    assert resp is not None and "timed out" in resp.text
+    # ...and after that, non-keyword messages are silent again.
+    assert await handle(_wa(ctx, "3"), ctx) is None
+
+
+async def test_whatsapp_keyword_after_expiry_just_reopens_menu(tmp_path):
+    ctx = _ctx(tmp_path)
+    now = _fake_clock_store(ctx)
+    await handle(_wa(ctx, "vencimentos"), ctx)
+    now[0] += 11.0
+    # The trigger keyword starts fresh — no confusing timeout notice in the way.
+    assert "1️⃣" in (await handle(_wa(ctx, "vencimentos"), ctx)).text
+
+
+async def test_telegram_expired_reply_gets_notice(tmp_path):
+    # Simulates the adapter forwarding a stale plain reply (raw_text has no '/').
+    ctx = _ctx(tmp_path)
+    now = _fake_clock_store(ctx)
+    await _send(ctx, "deadlines", "")  # opens the menu / the flow
+    now[0] += 11.0
+    resp = await handle(_req(ctx, "deadlines", "3"), ctx)
+    assert "timed out" in resp.text
+
+
+async def test_telegram_explicit_command_after_expiry_opens_menu(tmp_path):
+    ctx = _ctx(tmp_path)
+    now = _fake_clock_store(ctx)
+    await _send(ctx, "deadlines", "")
+    now[0] += 11.0
+    req = Request(
+        command="deadlines",
+        args=[],
+        raw_text="/deadlines",
+        user_id="u1",
+        chat_id="c1",
+        source=TransportSource.Telegram,
+    )
+    assert "1️⃣" in (await handle(req, ctx)).text  # menu, not the timeout notice
 
 
 # --- edit / delete -----------------------------------------------------------

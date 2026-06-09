@@ -71,11 +71,14 @@ that env var directly instead of using the wizard.
 
 WhatsApp inbound (off by default — WhatsApp stays output-only) is configured under
 `[transport]`: `whatsapp_inbound_enabled`, a phone-number `whatsapp_allow` list, a
-role, and `whatsapp_command` — the **one** command every inbound message is routed
-to. Whitelisted senders can only ever reach that single command (e.g. the brain's
-`/ask`, or the deadlines flow `/vencimentos`), never the rest of the bot. The bot's
-startup message on WhatsApp states which command is reachable (and warns if
-`whatsapp_command` doesn't match a registered command).
+role, and `whatsapp_command` — the **default** command for inbound messages. A
+message is routed by priority: the sender's open multi-step conversation, then a
+module-declared **keyword** in the first word (e.g. "vencimentos" opens the
+deadlines flow even when the brain is the default), then `whatsapp_command` (e.g.
+the brain's `/ask`). The command never comes from the message itself, so senders
+can't invoke arbitrary commands. The bot's startup message on WhatsApp states
+which commands and keywords are reachable (and warns if `whatsapp_command`
+doesn't match a registered command).
 
 The interface language is set in the wizard and persisted as `[core] language`
 (`en` / `pt-BR`); modules localize their command names and replies from it.
@@ -98,10 +101,13 @@ Core framework (complete, reviewed):
 
 - **Core:** contracts, registry, router, event bus, scheduler (APScheduler 3.x),
   plugin loader, bootstrap, permissions, a per-user conversation store (multi-step
-  flows), structured secret-scrubbing logging.
+  flows), per-module JSON storage (`ctx.store()` — atomic writes, corrupt-file
+  quarantine), a single-instance lock, structured secret-scrubbing logging.
+  Failures are isolated: a module with a colliding command or a bad cron schedule
+  is disabled and reported in `/status`, never fatal to the bot.
 - **Transports:** Telegram (python-telegram-bot, supervised lifecycle; routes
   follow-up replies to open conversations), WhatsApp (supervised bridge sidecar;
-  output + optional single-command inbound), response router.
+  output + optional keyword-routed inbound, stale-bridge reaping, unpaired-session admin notice), response router.
 - **Wizard:** Textual setup TUI — EN / pt-BR language picker (persisted to
   `[core] language`), dynamic per-module config from each module's `ConfigField`
   declarations, guided Telegram onboarding (token verify + chat-ID auto-detect),
@@ -111,13 +117,13 @@ Core framework (complete, reviewed):
   resources and opt-in commands as tools over Streamable HTTP (loopback, optional
   bearer token). Off by default; command execution is quadruple-gated.
 - **Diagnostics:** `octoops --check` validates Python/deps/config/timezone/log dir/
-  WhatsApp bridge & ports/brain key, with an opt-in live token check.
+  WhatsApp bridge, ports & pairing session/brain key, with an opt-in live token check.
 
 ## Development
 
 ```bash
 uv sync                       # provision Python + deps from uv.lock
-uv run --extra mcp pytest     # full suite (309 tests; --extra mcp covers the MCP server)
+uv run --extra mcp pytest     # full suite (360 tests; --extra mcp covers the MCP server)
 ```
 
 `requirements*.txt` are kept for pip users, but `uv.lock` is the source of truth.

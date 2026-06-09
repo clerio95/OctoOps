@@ -32,13 +32,18 @@ class _FakeReq:
 
 
 class _FakeRouter:
-    def __init__(self, response=None, has=True):
+    def __init__(self, response=None, has=True, entries=()):
         self._response = response
         self._has = has
+        self._entries = list(entries)
         self.dispatched = []
 
     def has_command(self, name):
         return self._has
+
+    def entries(self):
+        # [(command_name, CommandDef, owning_module)] like the real Router.
+        return list(self._entries)
 
     async def dispatch(self, req, *, role_override=None):
         self.dispatched.append((req, role_override))
@@ -237,3 +242,113 @@ def test_config_bad_whatsapp_role_raises():
     except ConfigError:
         return
     raise AssertionError("expected ConfigError for bad whatsapp_role")
+
+
+# --- keyword routing (multi-module WhatsApp) -----------------------------------
+
+
+def _keyword_entries():
+    from octoops.core.contracts import CommandDef
+
+    async def _h(req, ctx):
+        return None
+
+    deadlines = CommandDef(
+        "vencimentos", "d", Role.Operator, _h, whatsapp_keywords=["vencimentos"]
+    )
+    ask = CommandDef("ask", "a", Role.Operator, _h)
+    return [("vencimentos", deadlines, "deadlines"), ("ask", ask, "brain")]
+
+
+async def test_keyword_routes_to_declaring_command():
+    router = _FakeRouter(entries=_keyword_entries())
+    t, _client = _transport(
+        inbound=True, allow=["5511999998888"], router=router, command="ask"
+    )
+    await t._handle_incoming(
+        _FakeReq({"from": "5511999998888@s.whatsapp.net", "text": "Vencimentos hoje"})
+    )
+    req, role = router.dispatched[0]
+    assert req.command == "vencimentos"  # keyword wins over the default command
+    assert req.args == ["Vencimentos hoje"]  # full text still the argument
+
+
+async def test_keyword_matches_with_leading_slash():
+    router = _FakeRouter(entries=_keyword_entries())
+    t, _client = _transport(
+        inbound=True, allow=["5511999998888"], router=router, command="ask"
+    )
+    await t._handle_incoming(
+        _FakeReq({"from": "5511999998888@s.whatsapp.net", "text": "/vencimentos"})
+    )
+    assert router.dispatched[0][0].command == "vencimentos"
+
+
+async def test_non_keyword_falls_back_to_default_command():
+    router = _FakeRouter(entries=_keyword_entries())
+    t, _client = _transport(
+        inbound=True, allow=["5511999998888"], router=router, command="ask"
+    )
+    await t._handle_incoming(
+        _FakeReq({"from": "5511999998888@s.whatsapp.net", "text": "qual a previsão?"})
+    )
+    assert router.dispatched[0][0].command == "ask"
+
+
+async def test_keyword_routes_even_without_a_default_command():
+    # has=False: the configured default isn't registered, but the keyword still works.
+    router = _FakeRouter(has=False, entries=_keyword_entries())
+    t, _client = _transport(
+        inbound=True, allow=["5511999998888"], router=router, command="missing"
+    )
+    await t._handle_incoming(
+        _FakeReq({"from": "5511999998888@s.whatsapp.net", "text": "vencimentos"})
+    )
+    assert router.dispatched[0][0].command == "vencimentos"
+
+    # ...and a non-keyword message has nowhere to go -> acknowledged, not routed.
+    resp = await t._handle_incoming(
+        _FakeReq({"from": "5511999998888@s.whatsapp.net", "text": "oi"})
+    )
+    assert await _body(resp) == {"ok": True, "routed": False}
+    assert len(router.dispatched) == 1
+
+
+async def test_open_conversation_wins_over_keyword_and_default(registry):
+    """Mid-flow replies ("3", a date) must reach the module that owns the flow,
+    even though they match no keyword and a different default is configured."""
+    from octoops.core.conversations import conversation_key
+
+    router = _FakeRouter(entries=_keyword_entries())
+    t, _client = _transport(
+        inbound=True, allow=["5511999998888"], router=router, command="ask"
+    )
+    t._registry = registry
+    key = conversation_key(TransportSource.WhatsApp, "5511999998888")
+    registry.conversations.start(key, command="vencimentos", data={"step": "menu"})
+
+    await t._handle_incoming(
+        _FakeReq({"from": "5511999998888@s.whatsapp.net", "text": "3"})
+    )
+    assert router.dispatched[0][0].command == "vencimentos"
+
+
+async def test_expired_conversation_gets_one_forward(registry):
+    from octoops.core.conversations import ConversationStore, conversation_key
+
+    now = [1000.0]
+    registry.conversations = ConversationStore(ttl_seconds=10.0, clock=lambda: now[0])
+    router = _FakeRouter(entries=_keyword_entries())
+    t, _client = _transport(
+        inbound=True, allow=["5511999998888"], router=router, command="ask"
+    )
+    t._registry = registry
+    key = conversation_key(TransportSource.WhatsApp, "5511999998888")
+    registry.conversations.start(key, command="vencimentos", data={"step": "menu"})
+    now[0] += 11.0  # the flow times out
+
+    await t._handle_incoming(
+        _FakeReq({"from": "5511999998888@s.whatsapp.net", "text": "3"})
+    )
+    # Forwarded to the expired flow's command so the module can explain the timeout.
+    assert router.dispatched[0][0].command == "vencimentos"

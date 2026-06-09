@@ -35,11 +35,16 @@ def build_status_text(registry) -> str:
     uptime = datetime.now(tz) - registry.start_time
     modules = registry.module_names
     modules_line = ", ".join(sorted(modules)) if modules else "(none)"
-    return (
+    text = (
         "🐙 *OctoOps status*\n"
         f"Uptime: {humanize_timedelta(uptime)}\n"
         f"Modules ({len(modules)}): {modules_line}"
     )
+    # A module that loaded but was disabled (e.g. a command-name collision) must
+    # be visible to the operator, not just a log line.
+    for error in getattr(registry, "module_errors", []) or []:
+        text += f"\n⚠ disabled: {error}"
+    return text
 
 
 async def handle_status(request: Request, ctx: ModuleContext) -> Response:

@@ -18,7 +18,10 @@ if TYPE_CHECKING:
 
 EventPayload = Any  # typically a dict describing a business event
 
-CommandHandler = Callable[[Request, "ModuleContext"], Awaitable[Response]]
+# A handler may return None to mean "no reply" — the transports send nothing.
+# (Used e.g. by the WhatsApp keyword gate, where every inbound message is forced
+# to one command and non-matching messages must stay silent.)
+CommandHandler = Callable[[Request, "ModuleContext"], Awaitable[Optional[Response]]]
 JobHandler = Callable[["ModuleContext"], Awaitable[None]]
 ListenerHandler = Callable[[EventPayload, "ModuleContext"], Awaitable[None]]
 LifecycleHook = Callable[["ModuleContext"], Awaitable[None]]
@@ -53,6 +56,12 @@ class CommandDef:
     # still subject to the configured MCP service-role and global execution gate.
     # Defaults False — a command is never AI-invokable unless it opts in.
     ai_invokable: bool = False
+    # Trigger words for WhatsApp inbound. A fresh WhatsApp message whose first
+    # word matches one of these (case-insensitive, leading '/' ignored) is routed
+    # to this command; everything else flows to the configured default command.
+    # This is how several interactive modules can share WhatsApp. Empty (the
+    # default) means the command is only reachable as the configured default.
+    whatsapp_keywords: list[str] = field(default_factory=list)
 
 
 @dataclass
