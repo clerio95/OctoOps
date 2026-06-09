@@ -31,6 +31,13 @@ class WhatsAppStep(BaseStep):
         yield Input(
             value=str(self.state.octoops_callback_port), id="callback_port", type="integer"
         )
+        yield Label(
+            "Admin WhatsApp numbers for the startup message (comma/space separated, "
+            "digits only e.g. 5511999998888 — optional)"
+        )
+        yield Input(
+            value=" ".join(self.state.whatsapp_admin_chat_ids), id="wa_admins"
+        )
         yield Static(
             "Optional inbound: let whitelisted WhatsApp numbers message the brain "
             "(/ask). They can only ever reach the brain — never any other command."
@@ -51,7 +58,7 @@ class WhatsAppStep(BaseStep):
 
     def _refresh_enabled(self) -> None:
         wa_enabled = self.query_one("#use_whatsapp", Switch).value
-        for field_id in ("bridge_path", "bridge_port", "callback_port", "wa_inbound"):
+        for field_id in ("bridge_path", "bridge_port", "callback_port", "wa_admins", "wa_inbound"):
             self.query_one(f"#{field_id}").disabled = not wa_enabled
         inbound_on = wa_enabled and self.query_one("#wa_inbound", Switch).value
         for field_id in ("wa_allow", "wa_role"):
@@ -64,6 +71,7 @@ class WhatsAppStep(BaseStep):
             # Telegram-only: skip the bridge fields entirely. Keep whatever values
             # are present (defaults are fine); the runtime ignores them when off.
             self.state.whatsapp_inbound_enabled = False
+            self.state.whatsapp_admin_chat_ids = []
             return None
 
         path = self.query_one("#bridge_path", Input).value
@@ -80,6 +88,9 @@ class WhatsAppStep(BaseStep):
         self.state.whatsapp_bridge_path = path.strip()
         self.state.whatsapp_bridge_port = int(bridge_port)
         self.state.octoops_callback_port = int(callback_port)
+        self.state.whatsapp_admin_chat_ids = parse_id_list(
+            self.query_one("#wa_admins", Input).value
+        )
 
         inbound = self.query_one("#wa_inbound", Switch).value
         self.state.whatsapp_inbound_enabled = inbound

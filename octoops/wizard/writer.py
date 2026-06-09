@@ -42,6 +42,10 @@ def build_document(state: WizardState) -> tomlkit.TOMLDocument:
     transport["whatsapp_bridge_path"] = state.whatsapp_bridge_path
     transport["whatsapp_bridge_port"] = int(state.whatsapp_bridge_port)
     transport["octoops_callback_port"] = int(state.octoops_callback_port)
+    # Startup-status recipients (cleared when WhatsApp itself is off).
+    transport["whatsapp_admin_chat_ids"] = (
+        list(state.whatsapp_admin_chat_ids) if state.use_whatsapp else []
+    )
     # Optional brain-only inbound (forced off when WhatsApp itself is off).
     transport["whatsapp_inbound_enabled"] = bool(
         state.use_whatsapp and state.whatsapp_inbound_enabled
@@ -119,6 +123,7 @@ def state_from_config(config: AppConfig) -> WizardState:
         whatsapp_bridge_path=config.transport.whatsapp_bridge_path,
         whatsapp_bridge_port=config.transport.whatsapp_bridge_port,
         octoops_callback_port=config.transport.octoops_callback_port,
+        whatsapp_admin_chat_ids=list(config.transport.whatsapp_admin_chat_ids),
         whatsapp_inbound_enabled=config.transport.whatsapp_inbound_enabled,
         whatsapp_allow=list(config.transport.whatsapp_allow),
         whatsapp_command=config.transport.whatsapp_command,

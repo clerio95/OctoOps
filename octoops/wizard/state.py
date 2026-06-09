@@ -91,6 +91,8 @@ class WizardState:
     whatsapp_bridge_path: str = "./whatsmeow-bridge.exe"
     whatsapp_bridge_port: int = 3000
     octoops_callback_port: int = 3001
+    # JIDs/phone numbers that receive the startup status message on WhatsApp.
+    whatsapp_admin_chat_ids: list[str] = field(default_factory=list)
     # [transport] optional brain-only inbound (whitelisted WhatsApp numbers -> /ask)
     whatsapp_inbound_enabled: bool = False
     whatsapp_allow: list[str] = field(default_factory=list)

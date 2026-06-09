@@ -73,6 +73,7 @@ def test_build_document_emits_inbound_fields():
         bot_token="123456:ABC",
         admin_chat_id="1",
         use_whatsapp=True,
+        whatsapp_admin_chat_ids=["5511999998888"],
         whatsapp_inbound_enabled=True,
         whatsapp_allow=["5511999998888"],
         whatsapp_command="ask",
@@ -83,6 +84,7 @@ def test_build_document_emits_inbound_fields():
     assert tr["whatsapp_allow"] == ["5511999998888"]
     assert tr["whatsapp_command"] == "ask"
     assert tr["whatsapp_role"] == "operator"
+    assert tr["whatsapp_admin_chat_ids"] == ["5511999998888"]
 
 
 def test_inbound_forced_off_when_whatsapp_off():
@@ -90,11 +92,13 @@ def test_inbound_forced_off_when_whatsapp_off():
         bot_token="123456:ABC",
         admin_chat_id="1",
         use_whatsapp=False,
+        whatsapp_admin_chat_ids=["5511999998888"],  # cleared when WhatsApp off
         whatsapp_inbound_enabled=True,  # contradictory; must be forced off
         whatsapp_allow=["5511999998888"],
     )
     tr = build_document(state)["transport"]
     assert tr["whatsapp_inbound_enabled"] is False
+    assert tr["whatsapp_admin_chat_ids"] == []
 
 
 def test_state_from_config_hydrates_inbound():
@@ -102,6 +106,7 @@ def test_state_from_config_hydrates_inbound():
         telegram=TelegramConfig(bot_token="t", admin_chat_id="1"),
         transport=TransportConfig(
             whatsapp_enabled=True,
+            whatsapp_admin_chat_ids=["5511999998888"],
             whatsapp_inbound_enabled=True,
             whatsapp_allow=["5511999998888"],
             whatsapp_command="ask",
@@ -113,4 +118,5 @@ def test_state_from_config_hydrates_inbound():
     assert state.whatsapp_inbound_enabled is True
     assert state.whatsapp_allow == ["5511999998888"]
     assert state.whatsapp_command == "ask"
+    assert state.whatsapp_admin_chat_ids == ["5511999998888"]
     assert state.whatsapp_role == "admin"

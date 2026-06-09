@@ -31,6 +31,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -276,13 +277,16 @@ func handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers -----------------------------------------------------------------
 
-// parseJID accepts a full JID ("5511...@s.whatsapp.net") or a bare phone
-// number ("5511..."), appending the individual suffix when needed.
+// parseJID accepts a full JID ("5511...@s.whatsapp.net", a group "...@g.us", a
+// "...@lid") or a bare phone number ("5511..."), appending the individual suffix
+// when no server is present. A bare number must NOT be handed straight to
+// types.ParseJID: with no '@' it parses the digits as the *server* (empty user),
+// which whatsmeow then rejects as "unknown server". So append the suffix first.
 func parseJID(s string) (types.JID, error) {
-	if jid, err := types.ParseJID(s); err == nil {
-		return jid, nil
+	if !strings.ContainsRune(s, '@') {
+		s += "@s.whatsapp.net"
 	}
-	return types.ParseJID(s + "@s.whatsapp.net")
+	return types.ParseJID(s)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {
