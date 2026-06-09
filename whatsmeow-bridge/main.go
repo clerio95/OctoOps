@@ -185,7 +185,7 @@ func handleGroups(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, errResp("not logged in"))
 		return
 	}
-	groups, err := waClient.GetJoinedGroups()
+	groups, err := waClient.GetJoinedGroups(context.Background())
 	if err != nil {
 		log.Printf("get groups: %v", err)
 		writeJSON(w, http.StatusInternalServerError, errResp("groups fetch failed"))
