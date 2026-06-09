@@ -9,11 +9,11 @@ from octoops.wizard.writer import render_config
 
 class SummaryStep(BaseStep):
     STEP_ID = "summary"
-    step_title = "Review & confirm"
-    next_label = "Finish"
+    title_key = "summary.title"
+    next_key = "nav.finish"
 
     def content(self) -> ComposeResult:
-        yield Static("This config.toml will be written (secrets hidden below):")
+        yield Static(self.tr("summary.intro"))
         yield Static(render_config(self.state, redact_secrets=True), classes="preview")
 
     def save(self) -> str | None:

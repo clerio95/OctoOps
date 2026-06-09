@@ -185,6 +185,10 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(
         paths.resolve(config.core.log_file),
         config.core.log_max_bytes,
+        # Mirror logs to stderr only for interactive runs. Headless (Task
+        # Scheduler) has no TTY; mirroring there would duplicate the whole
+        # rotated app log into the un-rotated run.bat stdout redirect.
+        dev_stderr=sys.stderr.isatty(),
         secrets=secrets,
     )
     log = get_logger("octoops.main")

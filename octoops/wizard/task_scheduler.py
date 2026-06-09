@@ -20,11 +20,14 @@ _SYSTEM_SID = "S-1-5-18"  # NT AUTHORITY\SYSTEM
 # run.bat is written to OCTOOPS_HOME and called by the scheduled task.
 # It creates the logs\ directory (so the redirect never fails on a fresh install)
 # and captures both stdout and stderr to a log file alongside octoops.log.
+# Single '>' truncates on each start so this raw capture can't grow unbounded on a
+# 24/7 box — it only holds the current run's startup output; the durable, rotated
+# history lives in logs\octoops.log.
 _RUN_BAT = """\
 @echo off
 cd /d "%~dp0"
 mkdir logs 2>nul
-"{python_exe}" -m octoops >> logs\\octoops-stdout.log 2>&1
+"{python_exe}" -m octoops > logs\\octoops-stdout.log 2>&1
 """
 
 _UNINSTALL_BAT = """\

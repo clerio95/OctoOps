@@ -14,39 +14,30 @@ from octoops.wizard.state import (
 
 class WhatsAppStep(BaseStep):
     STEP_ID = "whatsapp"
-    step_title = "WhatsApp bridge (optional output transport)"
+    title_key = "whatsapp.title"
 
     def content(self) -> ComposeResult:
-        yield Static(
-            "WhatsApp is an optional, output-only channel. Leave it off for a "
-            "Telegram-only setup — you can enable it later by re-running setup."
-        )
-        yield Label("Enable WhatsApp output?")
+        yield Static(self.tr("whatsapp.intro"))
+        yield Label(self.tr("whatsapp.enable_label"))
         yield Switch(value=self.state.use_whatsapp, id="use_whatsapp")
-        yield Label("Bridge binary path")
+        yield Label(self.tr("whatsapp.bridge_path"))
         yield Input(value=self.state.whatsapp_bridge_path, id="bridge_path")
-        yield Label("Bridge port")
+        yield Label(self.tr("whatsapp.bridge_port"))
         yield Input(value=str(self.state.whatsapp_bridge_port), id="bridge_port", type="integer")
-        yield Label("OctoOps callback port")
+        yield Label(self.tr("whatsapp.callback_port"))
         yield Input(
             value=str(self.state.octoops_callback_port), id="callback_port", type="integer"
         )
-        yield Label(
-            "Admin WhatsApp numbers for the startup message (comma/space separated, "
-            "digits only e.g. 5511999998888 — optional)"
-        )
+        yield Label(self.tr("whatsapp.admins_label"))
         yield Input(
             value=" ".join(self.state.whatsapp_admin_chat_ids), id="wa_admins"
         )
-        yield Static(
-            "Optional inbound: let whitelisted WhatsApp numbers message the brain "
-            "(/ask). They can only ever reach the brain — never any other command."
-        )
-        yield Label("Enable inbound (whitelisted numbers → brain)?")
+        yield Static(self.tr("whatsapp.inbound_intro"))
+        yield Label(self.tr("whatsapp.inbound_label"))
         yield Switch(value=self.state.whatsapp_inbound_enabled, id="wa_inbound")
-        yield Label("Allowed WhatsApp numbers (comma/space separated)")
+        yield Label(self.tr("whatsapp.allow_label"))
         yield Input(value=" ".join(self.state.whatsapp_allow), id="wa_allow")
-        yield Label("Role for inbound users (viewer/operator/admin)")
+        yield Label(self.tr("whatsapp.role_label"))
         yield Input(value=self.state.whatsapp_role, id="wa_role")
 
     def on_mount(self) -> None:
@@ -77,14 +68,14 @@ class WhatsAppStep(BaseStep):
         path = self.query_one("#bridge_path", Input).value
         bridge_port = self.query_one("#bridge_port", Input).value
         callback_port = self.query_one("#callback_port", Input).value
-        if err := validate_required(path):
-            return f"Bridge path: {err}"
-        if err := validate_port(bridge_port):
-            return f"Bridge port: {err}"
-        if err := validate_port(callback_port):
-            return f"Callback port: {err}"
+        if err := validate_required(path, self.lang):
+            return self.tr("whatsapp.err.path", err=err)
+        if err := validate_port(bridge_port, self.lang):
+            return self.tr("whatsapp.err.bridge_port", err=err)
+        if err := validate_port(callback_port, self.lang):
+            return self.tr("whatsapp.err.callback_port", err=err)
         if bridge_port.strip() == callback_port.strip():
-            return "Bridge port and callback port must differ"
+            return self.tr("whatsapp.err.ports_differ")
         self.state.whatsapp_bridge_path = path.strip()
         self.state.whatsapp_bridge_port = int(bridge_port)
         self.state.octoops_callback_port = int(callback_port)
@@ -96,11 +87,11 @@ class WhatsAppStep(BaseStep):
         self.state.whatsapp_inbound_enabled = inbound
         if inbound:
             role = self.query_one("#wa_role", Input).value.strip().lower() or "operator"
-            if err := validate_role(role):
-                return f"Inbound role: {err}"
+            if err := validate_role(role, self.lang):
+                return self.tr("whatsapp.err.inbound_role", err=err)
             allow = parse_id_list(self.query_one("#wa_allow", Input).value)
             if not allow:
-                return "Add at least one allowed WhatsApp number, or turn inbound off"
+                return self.tr("whatsapp.err.need_allow")
             self.state.whatsapp_allow = allow
             self.state.whatsapp_role = role
         else:

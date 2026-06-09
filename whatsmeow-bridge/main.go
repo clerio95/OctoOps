@@ -72,7 +72,7 @@ func main() {
 		log.Fatalf("get device: %v", err)
 	}
 
-	clientLog := waLog.Stdout("Client", "DEBUG", true)
+	clientLog := waLog.Stdout("Client", "INFO", true)
 	waClient = whatsmeow.NewClient(deviceStore, clientLog)
 	waClient.AddEventHandler(onEvent)
 

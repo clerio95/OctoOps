@@ -14,6 +14,8 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Static
 
+from octoops.wizard.i18n import translate
+
 if TYPE_CHECKING:
     from octoops.wizard.app import WizardApp
     from octoops.wizard.state import WizardState
@@ -21,9 +23,11 @@ if TYPE_CHECKING:
 
 class BaseStep(Screen):
     STEP_ID: str = ""
-    step_title: str = "OctoOps Setup"
+    # Catalog keys (resolved against the wizard's chosen language at compose time)
+    # rather than literal text, so every screen renders in English or PT-BR.
+    title_key: str = "nav.next"  # overridden by every concrete step
+    next_key: str = "nav.next"
     show_back: bool = True
-    next_label: str = "Next"
 
     @property
     def state(self) -> "WizardState":
@@ -33,17 +37,25 @@ class BaseStep(Screen):
     def wizard_app(self) -> "WizardApp":
         return self.app  # type: ignore[return-value]
 
+    @property
+    def lang(self) -> str:
+        return self.wizard_app.language
+
+    def tr(self, key: str, **kwargs: object) -> str:
+        """Translate ``key`` into the wizard's current language."""
+        return translate(key, self.lang, **kwargs)
+
     def compose(self) -> ComposeResult:
         yield Header()
         with VerticalScroll(id="body"):
-            yield Static(self.step_title, classes="step-title")
+            yield Static(self.tr(self.title_key), classes="step-title")
             yield from self.content()
             yield Static("", id="error", classes="error")
         with Horizontal(id="nav"):
             if self.show_back:
-                yield Button("Back", id="back")
-            yield Button(self.next_label, id="next", variant="primary")
-            yield Button("Cancel", id="cancel", variant="error")
+                yield Button(self.tr("nav.back"), id="back")
+            yield Button(self.tr(self.next_key), id="next", variant="primary")
+            yield Button(self.tr("nav.cancel"), id="cancel", variant="error")
         yield Footer()
 
     def content(self) -> ComposeResult:  # overridden by subclasses

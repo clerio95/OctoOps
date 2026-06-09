@@ -16,7 +16,9 @@ from textual.screen import Screen
 from textual.widgets import Input
 
 from octoops.core.plugin_loader import DiscoveredModule
+from octoops.wizard.i18n import DEFAULT_LANGUAGE
 from octoops.wizard.screens.core_settings import CoreSettingsStep
+from octoops.wizard.screens.language import LanguageStep
 from octoops.wizard.screens.module_config import ModuleConfigStep
 from octoops.wizard.screens.modules import ModulesStep
 from octoops.wizard.screens.summary import SummaryStep
@@ -28,6 +30,7 @@ from octoops.wizard.state import WizardState
 from octoops.wizard.task_scheduler import is_windows
 
 _STEP_ORDER = [
+    "language",
     "welcome",
     "telegram",
     "whatsapp",
@@ -39,6 +42,7 @@ _STEP_ORDER = [
 ]
 
 _FACTORIES = {
+    "language": LanguageStep,
     "welcome": WelcomeStep,
     "telegram": TelegramStep,
     "whatsapp": WhatsAppStep,
@@ -76,6 +80,10 @@ class WizardApp(App):
         super().__init__()
         self.discovered = discovered
         self.config_exists = config_exists
+        # Wizard-session UI language (en / pt-BR). Not persisted to config; the
+        # language picker is the first screen and sets this before any other
+        # screen composes.
+        self.language = DEFAULT_LANGUAGE
         self.state = state or WizardState()
         if not self.state.enabled_modules:
             # Default-enable everything that loaded cleanly.
@@ -84,7 +92,7 @@ class WizardApp(App):
             ]
 
     def on_mount(self) -> None:
-        self.push_screen(WelcomeStep())
+        self.push_screen(LanguageStep())
 
     def enabled_with_fields(self) -> list[DiscoveredModule]:
         return [

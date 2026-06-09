@@ -18,7 +18,7 @@ def _field_id(module: str, key: str) -> str:
 
 class ModuleConfigStep(BaseStep):
     STEP_ID = "module_config"
-    step_title = "Module configuration"
+    title_key = "module_config.title"
 
     def content(self) -> ComposeResult:
         # (module, ConfigField, input_id) for save() to read back.
@@ -29,8 +29,19 @@ class ModuleConfigStep(BaseStep):
             yield Static(f"[{name}]", classes="step-title")
             existing = self.state.module_config.get(name, {})
             for field_def in module.registration.config_fields:
-                req = "required" if field_def.required else "optional"
-                yield Label(f"{field_def.label} ({req}) — {field_def.description}")
+                req = self.tr(
+                    "module_config.required"
+                    if field_def.required
+                    else "module_config.optional"
+                )
+                yield Label(
+                    self.tr(
+                        "module_config.field_label",
+                        label=field_def.label,
+                        req=req,
+                        description=field_def.description,
+                    )
+                )
                 if field_def.kind is ConfigFieldKind.Password:
                     # Secrets live in state.secrets (-> .env), not module_config.
                     prefill = self.state.secrets.get(
@@ -51,8 +62,13 @@ class ModuleConfigStep(BaseStep):
         collected: dict[str, dict[str, object]] = {}
         for module_name, field_def, input_id in self._fields:
             raw = self.query_one(f"#{input_id}", Input).value
-            if err := validate_config_field(field_def, raw):
-                return f"{module_name}.{field_def.key}: {err}"
+            if err := validate_config_field(field_def, raw, self.lang):
+                return self.tr(
+                    "module_config.err",
+                    module=module_name,
+                    key=field_def.key,
+                    err=err,
+                )
             if field_def.kind is ConfigFieldKind.Password:
                 # Route secrets to the .env sidecar, never into config.toml.
                 env_name = secret_env_name(module_name, field_def.key)

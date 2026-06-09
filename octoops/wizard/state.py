@@ -15,6 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from octoops.core.contracts import ConfigField, ConfigFieldKind
+from octoops.wizard.i18n import DEFAULT_LANGUAGE, translate
 
 _VALID_ROLES = ("viewer", "operator", "admin")
 
@@ -138,102 +139,109 @@ def secret_env_name(module: str, key: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in f"{module}_{key}".upper())
 
 
-def validate_required(value: str) -> str | None:
-    return None if value.strip() else "required"
+# Each validator takes an optional ``lang`` so its error string can be returned
+# already translated; it defaults to English (the source language) so existing
+# callers and unit tests that assert on the English text keep working unchanged.
 
 
-def validate_bot_token(value: str) -> str | None:
+def validate_required(value: str, lang: str = DEFAULT_LANGUAGE) -> str | None:
+    return None if value.strip() else translate("validate.required", lang)
+
+
+def validate_bot_token(value: str, lang: str = DEFAULT_LANGUAGE) -> str | None:
     if not value.strip():
-        return "required"
+        return translate("validate.required", lang)
     if ":" not in value:
-        return "expected the form 123456:ABC-..."
+        return translate("validate.bot_token_form", lang)
     return None
 
 
-def validate_chat_id(value: str) -> str | None:
+def validate_chat_id(value: str, lang: str = DEFAULT_LANGUAGE) -> str | None:
     """Telegram chat IDs are integers (can be negative for groups)."""
     if not value.strip():
-        return "required"
+        return translate("validate.required", lang)
     v = value.strip()
     if v.startswith("-"):
         v = v[1:]
     if not v.isdigit():
-        return "must be a numeric Telegram ID"
+        return translate("validate.chat_id_numeric", lang)
     return None
 
 
-def validate_user_id(value: str) -> str | None:
+def validate_user_id(value: str, lang: str = DEFAULT_LANGUAGE) -> str | None:
     v = value.strip()
     if not v.isdigit():
-        return f"{value!r} is not a numeric user ID"
+        return translate("validate.user_id_numeric", lang, value=value)
     return None
 
 
-def validate_user_id_list(raw: str) -> str | None:
+def validate_user_id_list(raw: str, lang: str = DEFAULT_LANGUAGE) -> str | None:
     for uid in parse_id_list(raw):
-        err = validate_user_id(uid)
+        err = validate_user_id(uid, lang)
         if err:
             return err
     return None
 
 
-def validate_timezone(value: str) -> str | None:
+def validate_timezone(value: str, lang: str = DEFAULT_LANGUAGE) -> str | None:
     try:
         ZoneInfo(value.strip())
     except (ZoneInfoNotFoundError, ValueError):
-        return f"unknown IANA timezone: {value!r}"
+        return translate("validate.timezone_unknown", lang, value=value)
     return None
 
 
-def validate_port(value: str) -> str | None:
+def validate_port(value: str, lang: str = DEFAULT_LANGUAGE) -> str | None:
     try:
         port = int(value)
     except (TypeError, ValueError):
-        return "must be a number"
+        return translate("validate.port_number", lang)
     if not (1 <= port <= 65535):
-        return "must be between 1 and 65535"
+        return translate("validate.port_range", lang)
     return None
 
 
-def validate_role(value: str) -> str | None:
+def validate_role(value: str, lang: str = DEFAULT_LANGUAGE) -> str | None:
     if value.strip().lower() not in _VALID_ROLES:
-        return f"must be one of {', '.join(_VALID_ROLES)}"
+        return translate("validate.role_oneof", lang, roles=", ".join(_VALID_ROLES))
     return None
 
 
 def validate_has_authorized_user(
-    allowed: list[str], operators: list[str], admins: list[str]
+    allowed: list[str],
+    operators: list[str],
+    admins: list[str],
+    lang: str = DEFAULT_LANGUAGE,
 ) -> str | None:
     """At least one user must be authorized, or the bot is unusable (it silently
     ignores everyone). Any of the three lists satisfies this."""
     if allowed or operators or admins:
         return None
-    return (
-        "Authorize at least one user — add your Telegram user ID as an Admin "
-        "(the Telegram step can capture it for you)."
-    )
+    return translate("validate.need_user", lang)
 
 
-def validate_config_field(field_def: ConfigField, value: str) -> str | None:
+def validate_config_field(
+    field_def: ConfigField, value: str, lang: str = DEFAULT_LANGUAGE
+) -> str | None:
     """Validate one module config field value against its declared kind."""
     value = value.strip()
     if not value:
-        return "required" if field_def.required else None
+        return translate("validate.required", lang) if field_def.required else None
 
     kind = field_def.kind
     if kind is ConfigFieldKind.Integer:
         try:
             int(value)
         except ValueError:
-            return "must be an integer"
+            return translate("validate.field_integer", lang)
     elif kind is ConfigFieldKind.Boolean:
         if value.lower() not in ("true", "false", "yes", "no", "1", "0"):
-            return "must be true/false"
+            return translate("validate.field_boolean", lang)
     elif kind is ConfigFieldKind.IpAddress:
         try:
             ipaddress.ip_address(value)
         except ValueError:
-            return "must be a valid IP address"
+            return translate("validate.field_ip", lang)
     return None
 
 

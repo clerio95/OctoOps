@@ -6,7 +6,7 @@ are pressed on the *top* screen object to avoid ambiguity with stacked screens.
 
 import pytest
 from textual import events
-from textual.widgets import Button, Input, Select, Switch
+from textual.widgets import Button, Input, RadioButton, RadioSet, Select, Static, Switch
 
 from octoops.core.plugin_loader import DiscoveredModule, Manifest
 from octoops.core.contracts import ModuleRegistration
@@ -29,14 +29,27 @@ def _press(app, button_id: str) -> None:
     app.screen.query_one(f"#{button_id}", Button).press()
 
 
+async def _skip_language(app, pilot) -> None:
+    """Advance past the new first screen (language picker) to welcome."""
+    assert app.screen.STEP_ID == "language"
+    _press(app, "next")  # language -> welcome (English default)
+    await pilot.pause()
+
+
 @pytest.mark.asyncio
-async def test_welcome_mounts():
+async def test_language_then_welcome_mount():
     app = WizardApp(discovered=_discovered(), config_exists=True)
     async with app.run_test() as pilot:
         await pilot.pause()
-        # Welcome has no Back button, and warns about overwrite when config exists.
+        # The language picker is the first screen and has no Back button.
+        assert app.screen.STEP_ID == "language"
         assert len(app.screen.query("#back")) == 0
+        await _skip_language(app, pilot)
+        # Welcome follows; it warns about overwrite when a config exists, and now
+        # has a Back button (returning to the language picker).
+        assert app.screen.STEP_ID == "welcome"
         assert "Welcome" in str(app.screen.query_one(".step-title").render())
+        assert len(app.screen.query("#back")) == 1
 
 
 @pytest.mark.asyncio
@@ -54,6 +67,7 @@ async def test_full_happy_path_writes_state():
     app = WizardApp(discovered=_discovered(), config_exists=False)
     async with app.run_test() as pilot:
         await pilot.pause()
+        await _skip_language(app, pilot)
         _press(app, "next")  # welcome -> telegram
         await pilot.pause()
 
@@ -88,6 +102,7 @@ async def test_full_happy_path_writes_state():
 
 
 async def _advance_to_core(app, pilot) -> None:
+    await _skip_language(app, pilot)
     _press(app, "next")  # welcome -> telegram
     await pilot.pause()
     app.screen.query_one("#bot_token", Input).value = "123456:ABC-def"
@@ -138,6 +153,7 @@ async def test_whatsapp_screen_saves_admin_chat_ids():
     app = WizardApp(discovered=_discovered(), config_exists=False)
     async with app.run_test() as pilot:
         await pilot.pause()
+        await _skip_language(app, pilot)
         _press(app, "next")  # welcome -> telegram
         await pilot.pause()
         app.screen.query_one("#bot_token", Input).value = "123456:ABC-def"
@@ -163,6 +179,7 @@ async def test_ctrl_v_inserts_clipboard_text_into_focused_input(monkeypatch):
     app = WizardApp(discovered=_discovered(), config_exists=False)
     async with app.run_test() as pilot:
         await pilot.pause()
+        await _skip_language(app, pilot)
         _press(app, "next")  # welcome -> telegram (has a bot_token Input)
         await pilot.pause()
         token = app.screen.query_one("#bot_token", Input)
@@ -180,6 +197,7 @@ async def test_core_step_blocks_when_no_user_authorized():
     app = WizardApp(discovered=_discovered(), config_exists=False)
     async with app.run_test() as pilot:
         await pilot.pause()
+        await _skip_language(app, pilot)
         _press(app, "next")  # welcome -> telegram
         await pilot.pause()
         app.screen.query_one("#bot_token", Input).value = "123456:ABC-def"
@@ -198,3 +216,44 @@ async def test_core_step_blocks_when_no_user_authorized():
         assert "Authorize at least one user" in str(
             app.screen.query_one("#error").render()
         )
+
+
+@pytest.mark.asyncio
+async def test_botfather_link_shown_on_telegram_screen():
+    # The Telegram step must point users at BotFather to create their token.
+    app = WizardApp(discovered=_discovered(), config_exists=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _skip_language(app, pilot)
+        _press(app, "next")  # welcome -> telegram
+        await pilot.pause()
+        assert app.screen.STEP_ID == "telegram"
+        texts = " ".join(str(s.render()) for s in app.screen.query(Static))
+        assert "telegram.me/BotFather" in texts
+
+
+@pytest.mark.asyncio
+async def test_pt_br_language_localizes_following_screens():
+    # Picking Português-BR on the first screen makes every later screen (and the
+    # nav buttons) render in Portuguese.
+    app = WizardApp(discovered=_discovered(), config_exists=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app.screen.STEP_ID == "language"
+        # Select the second option (Português-BR); RadioSet enforces exclusivity.
+        radio = app.screen.query_one("#language", RadioSet)
+        list(app.screen.query(RadioButton))[1].value = True
+        await pilot.pause()
+        assert radio.pressed_index == 1
+        _press(app, "next")  # language -> welcome (now in pt-BR)
+        await pilot.pause()
+
+        assert app.language == "pt-BR"
+        assert app.screen.STEP_ID == "welcome"
+        assert "Bem-vindo" in str(app.screen.query_one(".step-title").render())
+        # The welcome "Begin" button is localized.
+        assert "Começar" in str(app.screen.query_one("#next", Button).label)
+
+        _press(app, "next")  # welcome -> telegram
+        await pilot.pause()
+        assert "plano de controle" in str(app.screen.query_one(".step-title").render())

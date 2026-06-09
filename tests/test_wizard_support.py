@@ -41,6 +41,8 @@ def test_write_run_bat_creates_file(tmp_path, monkeypatch):
     assert r"C:\Python\python.exe" in content
     assert "octoops-stdout.log" in content
     assert "mkdir logs" in content
+    # Truncate-on-start (single '>'), not append — bounds the raw stdout log.
+    assert ">>" not in content
 
 
 def test_write_run_bat_noop_off_windows(tmp_path, monkeypatch):

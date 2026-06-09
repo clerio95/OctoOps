@@ -20,19 +20,20 @@ _START_TIMEOUT = 180.0
 
 class TelegramStep(BaseStep):
     STEP_ID = "telegram"
-    step_title = "Telegram (control plane)"
+    title_key = "telegram.title"
 
     def content(self) -> ComposeResult:
-        yield Label("Bot token  (get one from @BotFather → /newbot)")
+        yield Static(self.tr("telegram.botfather_hint"), classes="warn")
+        yield Label(self.tr("telegram.token_label"))
         yield Input(
             value=self.state.bot_token,
             password=True,
             id="bot_token",
             placeholder="123456:ABC-...",
         )
-        yield Button("Verify token & auto-detect chat ID", id="pair")
+        yield Button(self.tr("telegram.verify_button"), id="pair")
         yield Static("", id="pair_status", classes="preview")
-        yield Label("Admin chat ID (receives startup / error notices)")
+        yield Label(self.tr("telegram.admin_label"))
         yield Input(
             value=self.state.admin_chat_id, id="admin_chat_id", placeholder="123456789"
         )
@@ -52,22 +53,20 @@ class TelegramStep(BaseStep):
 
     async def _pair(self) -> None:
         token = self.query_one("#bot_token", Input).value
-        if err := validate_bot_token(token):
-            self._status(f"⚠ Bot token: {err}")
+        if err := validate_bot_token(token, self.lang):
+            self._status(self.tr("telegram.pair.token_warn", err=err))
             return
 
-        self._status("Checking token with Telegram…")
+        self._status(self.tr("telegram.pair.checking"))
         api = TelegramApi(token.strip())
         try:
             try:
                 identity = await verify_token(api)
             except VerifyNetworkError as exc:
-                self._status(
-                    f"✗ Could not reach Telegram — check your internet connection.\n({exc})"
-                )
+                self._status(self.tr("telegram.pair.unreachable", exc=exc))
                 return
             if identity is None:
-                self._status("✗ Token rejected by Telegram — re-check it with @BotFather.")
+                self._status(self.tr("telegram.pair.rejected"))
                 return
 
             nonce = new_nonce()
@@ -78,26 +77,21 @@ class TelegramStep(BaseStep):
                 # just surfaces later as the 409 that wait_for_start already handles.
                 pass
             self._status(
-                f"✓ Connected to @{identity.username}\n\n"
-                f"Now open this link and press Start:\n{link}\n\n"
-                "Waiting for you to press Start…"
+                self.tr(
+                    "telegram.pair.connected",
+                    username=identity.username,
+                    link=link,
+                )
             )
 
             try:
                 result = await wait_for_start(api, nonce, timeout=_START_TIMEOUT)
             except BotAlreadyRunningError:
-                self._status(
-                    "✗ This bot looks like it's already running elsewhere, so Telegram "
-                    "won't let setup read its messages. Stop that instance, or just type "
-                    "your chat ID below."
-                )
+                self._status(self.tr("telegram.pair.already_running"))
                 return
 
             if result is None:
-                self._status(
-                    "Timed out waiting for Start. Press Start and click the button "
-                    "again, or just type your chat ID below."
-                )
+                self._status(self.tr("telegram.pair.timeout"))
                 return
 
             self.query_one("#admin_chat_id", Input).value = result.chat_id
@@ -109,9 +103,9 @@ class TelegramStep(BaseStep):
             extra = ""
             if result.user_id and result.user_id not in self.state.admin_user_ids:
                 self.state.admin_user_ids.append(result.user_id)
-                extra = f" Added you (user {result.user_id}) as an admin."
+                extra = self.tr("telegram.pair.added_admin", user_id=result.user_id)
             self._status(
-                f"✓ Got your chat ID ({result.chat_id}).{extra} You're set — press Next."
+                self.tr("telegram.pair.got_chat", chat_id=result.chat_id, extra=extra)
             )
         finally:
             await api.close()
@@ -121,10 +115,10 @@ class TelegramStep(BaseStep):
     def save(self) -> str | None:
         token = self.query_one("#bot_token", Input).value
         chat = self.query_one("#admin_chat_id", Input).value
-        if err := validate_bot_token(token):
-            return f"Bot token: {err}"
-        if err := validate_chat_id(chat):
-            return f"Admin chat ID: {err}"
+        if err := validate_bot_token(token, self.lang):
+            return self.tr("telegram.err.token", err=err)
+        if err := validate_chat_id(chat, self.lang):
+            return self.tr("telegram.err.chat", err=err)
         self.state.bot_token = token.strip()
         self.state.admin_chat_id = chat.strip()
         return None
