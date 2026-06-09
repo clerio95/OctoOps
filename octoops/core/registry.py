@@ -56,6 +56,10 @@ class Registry:
     invites: "InviteStore | None" = None
     # The bot's own @username, learned at startup — used to build invite links.
     bot_username: str | None = None
+    # WhatsApp groups the bot is a member of, fetched once per bridge startup.
+    # Each entry: {"jid": "...", "name": "...", "participants": N}.
+    # None = bridge not started or not yet logged in; [] = logged in, no groups.
+    whatsapp_groups: list[dict[str, Any]] | None = None
 
 
 @dataclass

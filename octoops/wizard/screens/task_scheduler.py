@@ -13,7 +13,8 @@ class TaskSchedulerStep(BaseStep):
     def content(self) -> ComposeResult:
         yield Static(
             "Register OctoOps to start automatically at boot, running as SYSTEM, "
-            "restarting on failure (3x / 1 min)?"
+            "restarting on failure (10x / 1 min)? "
+            "Logs: logs\\octoops.log (app) and logs\\octoops-stdout.log (startup errors)."
         )
         yield Checkbox(
             "Register the boot task", value=self.state.register_task, id="register_task"

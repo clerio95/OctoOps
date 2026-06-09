@@ -17,6 +17,10 @@ class ModulesStep(BaseStep):
             yield Static("No modules discovered.")
             return
         yield Static("Check the modules to enable:")
+        yield Static(
+            "↑/↓ to move · Space or click to toggle · all enabled by default",
+            classes="warn",
+        )
         selections = [
             Selection(
                 f"{m.manifest.name} — {m.manifest.description}",

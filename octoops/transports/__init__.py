@@ -60,6 +60,7 @@ def build_transports(registry: "Registry") -> dict[str, Transport]:
             bridge_path=bridge_path,
             bridge_port=cfg.transport.whatsapp_bridge_port,
             callback_port=cfg.transport.octoops_callback_port,
+            admin_chat_ids=cfg.transport.whatsapp_admin_chat_ids,
             inbound_enabled=cfg.transport.whatsapp_inbound_enabled,
             allow=cfg.transport.whatsapp_allow,
             command=cfg.transport.whatsapp_command,

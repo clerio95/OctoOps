@@ -81,6 +81,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
 	mux.HandleFunc("/send", handleSend)
+	mux.HandleFunc("/groups", handleGroups)
 	mux.HandleFunc("/register-callback", handleRegisterCallback)
 	mux.HandleFunc("/shutdown", handleShutdown)
 	srv := &http.Server{Addr: addr, Handler: mux}
@@ -178,6 +179,33 @@ func postCallback(url string, payload []byte) {
 }
 
 // --- HTTP handlers -----------------------------------------------------------
+
+func handleGroups(w http.ResponseWriter, _ *http.Request) {
+	if !waClient.IsConnected() || waClient.Store.ID == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("not logged in"))
+		return
+	}
+	groups, err := waClient.GetJoinedGroups()
+	if err != nil {
+		log.Printf("get groups: %v", err)
+		writeJSON(w, http.StatusInternalServerError, errResp("groups fetch failed"))
+		return
+	}
+	type groupEntry struct {
+		JID          string `json:"jid"`
+		Name         string `json:"name"`
+		Participants int    `json:"participants"`
+	}
+	result := make([]groupEntry, 0, len(groups))
+	for _, g := range groups {
+		result = append(result, groupEntry{
+			JID:          g.JID.String(),
+			Name:         g.Name,
+			Participants: len(g.Participants),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "groups": result})
+}
 
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	loggedIn := waClient.IsConnected() && waClient.Store.ID != nil

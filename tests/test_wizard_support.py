@@ -16,7 +16,7 @@ def test_build_task_xml_contents():
     xml = ts.build_task_xml(r"C:\octoops\.venv\Scripts\python.exe", "-m octoops", r"C:\octoops")
     assert "<BootTrigger>" in xml
     assert "S-1-5-18" in xml  # SYSTEM
-    assert "<Count>3</Count>" in xml and "PT1M" in xml  # restart 3x / 1 min
+    assert "<Count>10</Count>" in xml and "PT1M" in xml  # restart 10x / 1 min
     assert "-m octoops" in xml
     assert r"C:\octoops" in xml
 
@@ -31,6 +31,22 @@ def test_register_task_noop_off_windows(monkeypatch):
     ok, msg = ts.register_task("python", "/base")
     assert ok is False
     assert "Windows-only" in msg
+
+
+def test_write_run_bat_creates_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(ts, "is_windows", lambda: True)
+    bat = ts.write_run_bat(tmp_path, r"C:\Python\python.exe")
+    assert bat is not None and bat.is_file()
+    content = bat.read_text()
+    assert r"C:\Python\python.exe" in content
+    assert "octoops-stdout.log" in content
+    assert "mkdir logs" in content
+
+
+def test_write_run_bat_noop_off_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(ts, "is_windows", lambda: False)
+    assert ts.write_run_bat(tmp_path, "python") is None
+    assert not (tmp_path / "run.bat").exists()
 
 
 def test_write_uninstall_bat_creates_file(tmp_path, monkeypatch):

@@ -126,6 +126,10 @@ class WizardApp(App):
         self.exit(None)
 
     def on_key(self, event: events.Key) -> None:
+        # Modern terminals (Windows Terminal, most Linux/macOS emulators) turn
+        # Ctrl+V into a bracketed-paste sequence that Textual delivers as a Paste
+        # event, which Input handles natively. This manual path is the fallback
+        # for terminals that send Ctrl+V as a raw key (e.g. legacy conhost/cmd).
         if event.key != "ctrl+v":
             return
         focused = self.focused
@@ -133,7 +137,7 @@ class WizardApp(App):
             return
         text = _clipboard_paste()
         if text:
-            focused._insert_text_at_cursor(text)
+            focused.insert_text_at_cursor(text)
         event.stop()
 
 
@@ -143,17 +147,37 @@ def _clipboard_paste() -> str:
     if not sys.platform.startswith("win"):
         return ""
     import ctypes
+    from ctypes import wintypes
 
     CF_UNICODETEXT = 13
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    # Declare signatures so ctypes doesn't truncate the 64-bit HANDLE/pointer to
+    # a 32-bit int — the silent bug that made paste a no-op on 64-bit Windows.
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    user32.CloseClipboard.restype = wintypes.BOOL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+
     try:
-        if not ctypes.windll.user32.OpenClipboard(None):
+        if not user32.OpenClipboard(None):
             return ""
-        handle = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
-        return ctypes.wstring_at(handle) if handle else ""
+        try:
+            handle = user32.GetClipboardData(CF_UNICODETEXT)
+            if not handle:
+                return ""
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                return ""
+            try:
+                return ctypes.c_wchar_p(ptr).value or ""
+            finally:
+                kernel32.GlobalUnlock(handle)
+        finally:
+            user32.CloseClipboard()
     except Exception:  # noqa: BLE001
         return ""
-    finally:
-        try:
-            ctypes.windll.user32.CloseClipboard()
-        except Exception:  # noqa: BLE001
-            pass

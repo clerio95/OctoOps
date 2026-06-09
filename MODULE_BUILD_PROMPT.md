@@ -201,6 +201,18 @@ wa = ctx.registry.transports.get("whatsapp")   # may be None (WhatsApp optional!
 if wa is not None:
     await wa.send(Response(text="…", chat_id="", whatsapp_chat_ids=["123@g.us"]))
 
+# --- WhatsApp group discovery ---
+# Populated automatically when the bridge connects and the bot is logged in.
+# Each entry: {"jid": "...", "name": "...", "participants": N}.
+# None = bridge not started or not logged in yet; [] = logged in, no groups.
+groups = ctx.registry.whatsapp_groups  # list[dict] | None
+# The same list is persisted at data/whatsapp_groups.json on every bridge reconnect
+# so wizard tooling can read it even while the bridge isn't running.
+# Typical module pattern: store the desired group JID in a config field (set once
+# via --setup or hand-edit), then send to it at runtime:
+#   group_jid = ctx.config.require("group_jid")
+#   Response(text="…", chat_id="", whatsapp_chat_ids=[group_jid])
+
 # --- introspection ---
 ctx.registry.start_time          # datetime, tz-aware
 ctx.registry.module_names        # list[str] of loaded modules
@@ -259,9 +271,11 @@ read-only command into the AI surface (`ai_invokable=True`).
   spin up your own; this is a pending core decision.
 - **Persistent storage / DB:** none yet. Small per-module files under
   `ctx.registry.paths.data` are acceptable; anything bigger is a pending decision.
-- **Telegram→WhatsApp mirror routing:** the plumbing exists
-  (`mirror_to_whatsapp` / `whatsapp_chat_ids`) but *which* reply goes to *which*
-  WhatsApp chat is intentionally unspecified.
+- **Targeting a WhatsApp group:** use `ctx.registry.whatsapp_groups` (fetched at
+  bridge startup) or `data/whatsapp_groups.json` to look up available JIDs. Store
+  the chosen JID in a module config field so the operator sets it once. Then pass
+  it in `whatsapp_chat_ids=[jid]` on any `Response`. The *automatic mirror* path
+  (`mirror_to_whatsapp=True`) is still unspecified and should not be used.
 
 ---
 

@@ -11,6 +11,10 @@ whatsapp_enabled = true
 whatsapp_bridge_path = "./whatsmeow-bridge.exe"
 whatsapp_bridge_port = 3000
 octoops_callback_port = 3001
+# Phone numbers (or JIDs) that receive the startup status message when the bridge
+# connects. Format: digits only or full JID, e.g. "5511999998888" or
+# "5511999998888@s.whatsapp.net". Leave empty for no WhatsApp startup notification.
+whatsapp_admin_chat_ids = []             # e.g. ["5511999998888"]
 # Optional inbound: let whitelisted WhatsApp numbers message the embedded brain.
 # Off by default — WhatsApp stays output-only. When on, every inbound message
 # from an allowed number is routed to ONE command (whatsapp_command), so a

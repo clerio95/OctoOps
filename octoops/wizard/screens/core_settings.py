@@ -5,6 +5,7 @@ from textual.widgets import Input, Label, Select
 
 from octoops.wizard.screens.base import BaseStep
 from octoops.wizard.state import (
+    COMMON_TIMEZONES,
     parse_id_list,
     validate_has_authorized_user,
     validate_required,
@@ -13,14 +14,31 @@ from octoops.wizard.state import (
     validate_user_id_list,
 )
 
+# Sentinel Select value meaning "use the custom text field below".
+_TZ_CUSTOM = "__custom__"
+
 
 class CoreSettingsStep(BaseStep):
     STEP_ID = "core"
     step_title = "Core settings"
 
     def content(self) -> ComposeResult:
-        yield Label("Timezone (IANA, e.g. America/Sao_Paulo)")
-        yield Input(value=self.state.timezone, id="timezone")
+        # The current zone may be one not in the curated list (e.g. autodetected
+        # on Linux or hand-entered on a re-run); offer it via the custom field.
+        in_list = self.state.timezone in COMMON_TIMEZONES
+        yield Label("Timezone")
+        yield Select(
+            [(tz, tz) for tz in COMMON_TIMEZONES] + [("Custom (type below)…", _TZ_CUSTOM)],
+            value=self.state.timezone if in_list else _TZ_CUSTOM,
+            allow_blank=False,
+            id="timezone",
+        )
+        yield Label("Custom IANA timezone (only used when 'Custom' is selected)")
+        yield Input(
+            value="" if in_list else self.state.timezone,
+            placeholder="e.g. America/Sao_Paulo",
+            id="timezone_custom",
+        )
         yield Label("Allowed Telegram user IDs (space/comma separated)")
         yield Input(value=" ".join(self.state.allowed_user_ids), id="allowed")
         yield Label("Operator user IDs")
@@ -38,7 +56,11 @@ class CoreSettingsStep(BaseStep):
         yield Input(value=self.state.log_file, id="log_file")
 
     def save(self) -> str | None:
-        tz = self.query_one("#timezone", Input).value
+        selected_tz = str(self.query_one("#timezone", Select).value)
+        if selected_tz == _TZ_CUSTOM:
+            tz = self.query_one("#timezone_custom", Input).value
+        else:
+            tz = selected_tz
         allowed = self.query_one("#allowed", Input).value
         operators = self.query_one("#operators", Input).value
         admins = self.query_one("#admins", Input).value

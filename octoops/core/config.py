@@ -40,6 +40,8 @@ class TransportConfig:
     whatsapp_bridge_path: str = "./whatsmeow-bridge.exe"
     whatsapp_bridge_port: int = 3000
     octoops_callback_port: int = 3001
+    # Phone numbers (JIDs or digits) that receive startup status notifications.
+    whatsapp_admin_chat_ids: list[str] = field(default_factory=list)
     # Optional inbound: let whitelisted WhatsApp numbers reach ONE command (the
     # embedded brain by default). Off by default — WhatsApp stays output-only.
     # whatsapp_command is forced on every inbound message, so a WhatsApp user can
@@ -129,6 +131,9 @@ class AppConfig:
             ),
             octoops_callback_port=int(
                 tr.get("octoops_callback_port", TransportConfig.octoops_callback_port)
+            ),
+            whatsapp_admin_chat_ids=_as_str_list(
+                tr.get("whatsapp_admin_chat_ids"), "transport.whatsapp_admin_chat_ids"
             ),
             whatsapp_inbound_enabled=bool(
                 tr.get("whatsapp_inbound_enabled", False)

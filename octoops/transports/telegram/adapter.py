@@ -22,6 +22,7 @@ from telegram.ext import Application, MessageHandler, filters
 from octoops.core.errors import TransportError
 from octoops.core.logging import get_logger
 from octoops.core.response_router import route_response
+from octoops.modules.status import build_status_text
 from octoops.shared.models import Request, Response, TransportSource
 from octoops.transports import Transport
 
@@ -84,7 +85,7 @@ class TelegramTransport(Transport):
                     continue
 
                 backoff = 1
-                await self._notify_admin("🐙 OctoOps started.")
+                await self._notify_admin(self._startup_text())
                 # Block until cancelled (shutdown). Polling runs in the background.
                 await asyncio.Event().wait()
         finally:
@@ -190,6 +191,12 @@ class TelegramTransport(Transport):
                 text=response.text,
                 reply_to_message_id=reply_to,
             )
+
+    def _startup_text(self) -> str:
+        if self._registry is None:
+            return "🐙 OctoOps started."
+        body = build_status_text(self._registry)
+        return body.replace("🐙 *OctoOps status*", "🐙 *OctoOps started*", 1)
 
     async def _notify_admin(self, text: str) -> None:
         if not self._admin_chat_id or self._app is None:

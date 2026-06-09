@@ -5,11 +5,14 @@ are pressed on the *top* screen object to avoid ambiguity with stacked screens.
 """
 
 import pytest
-from textual.widgets import Button, Input
+from textual import events
+from textual.widgets import Button, Input, Select
 
 from octoops.core.plugin_loader import DiscoveredModule, Manifest
 from octoops.core.contracts import ModuleRegistration
+from octoops.wizard import app as app_mod
 from octoops.wizard.app import WizardApp
+from octoops.wizard.screens.core_settings import _TZ_CUSTOM
 from octoops.wizard.state import WizardState
 
 
@@ -82,6 +85,69 @@ async def test_full_happy_path_writes_state():
     assert result.admin_chat_id == "999"
     assert result.admin_user_ids == ["999"]
     assert result.enabled_modules == ["status"]
+
+
+async def _advance_to_core(app, pilot) -> None:
+    _press(app, "next")  # welcome -> telegram
+    await pilot.pause()
+    app.screen.query_one("#bot_token", Input).value = "123456:ABC-def"
+    app.screen.query_one("#admin_chat_id", Input).value = "999"
+    _press(app, "next")  # telegram -> whatsapp
+    await pilot.pause()
+    _press(app, "next")  # whatsapp -> core
+    await pilot.pause()
+    assert app.screen.STEP_ID == "core"
+
+
+@pytest.mark.asyncio
+async def test_core_timezone_dropdown_picks_curated_zone():
+    # A zone in the curated list is preselected in the Select (not the custom
+    # sentinel), and saving carries it through to state.
+    state = WizardState(timezone="America/Sao_Paulo", admin_user_ids=["999"])
+    app = WizardApp(discovered=_discovered(), state=state)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _advance_to_core(app, pilot)
+        assert app.screen.query_one("#timezone", Select).value == "America/Sao_Paulo"
+        _press(app, "next")  # core -> modules
+        await pilot.pause()
+    assert app.state.timezone == "America/Sao_Paulo"
+
+
+@pytest.mark.asyncio
+async def test_core_timezone_custom_entry():
+    # A zone outside the curated list falls back to the custom field, and a
+    # custom IANA zone typed there is validated and saved.
+    state = WizardState(timezone="Pacific/Auckland", admin_user_ids=["999"])
+    app = WizardApp(discovered=_discovered(), state=state)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await _advance_to_core(app, pilot)
+        assert app.screen.query_one("#timezone", Select).value == _TZ_CUSTOM
+        assert app.screen.query_one("#timezone_custom", Input).value == "Pacific/Auckland"
+        app.screen.query_one("#timezone_custom", Input).value = "Asia/Tokyo"
+        _press(app, "next")  # core -> modules
+        await pilot.pause()
+    assert app.state.timezone == "Asia/Tokyo"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_v_inserts_clipboard_text_into_focused_input(monkeypatch):
+    # Regression guard: the paste path must call the *public* insert API and
+    # actually drop the clipboard text into the focused Input. The clipboard
+    # reader is stubbed so this runs on any platform.
+    monkeypatch.setattr(app_mod, "_clipboard_paste", lambda: "PASTED")
+    app = WizardApp(discovered=_discovered(), config_exists=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _press(app, "next")  # welcome -> telegram (has a bot_token Input)
+        await pilot.pause()
+        token = app.screen.query_one("#bot_token", Input)
+        token.focus()
+        await pilot.pause()
+        app.on_key(events.Key("ctrl+v", None))
+        await pilot.pause()
+        assert token.value == "PASTED"
 
 
 @pytest.mark.asyncio

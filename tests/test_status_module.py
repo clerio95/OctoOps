@@ -3,6 +3,7 @@
 import pytest
 
 from octoops.core.bootstrap import build_runtime
+from octoops.modules.status import build_status_text
 from octoops.shared.models import Request, TransportSource
 
 
@@ -15,6 +16,16 @@ def make_request(user_id: str) -> Request:
         chat_id="chat1",
         source=TransportSource.Telegram,
     )
+
+
+@pytest.mark.asyncio
+async def test_build_status_text_no_role(app_config):
+    runtime = build_runtime(app_config)
+    text = build_status_text(runtime.registry)
+    assert "OctoOps" in text
+    assert "Uptime:" in text
+    assert "Modules" in text
+    assert "Your role" not in text  # caller-role line is NOT in the shared helper
 
 
 @pytest.mark.asyncio

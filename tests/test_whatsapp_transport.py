@@ -4,6 +4,7 @@ Covers the documented REST flow: health -> register-callback -> send, plus the
 OctoOps-side /incoming callback acknowledgement.
 """
 
+import json
 import socket
 
 import aiohttp
@@ -13,6 +14,11 @@ from aiohttp import web
 from octoops.shared.models import Response
 from octoops.transports.whatsapp.bridge_client import BridgeClient
 from octoops.transports.whatsapp.adapter import WhatsAppTransport
+
+_SAMPLE_GROUPS = [
+    {"jid": "111@g.us", "name": "Ops Team", "participants": 5},
+    {"jid": "222@g.us", "name": "Alerts", "participants": 3},
+]
 
 
 def _free_port() -> int:
@@ -44,9 +50,13 @@ async def mock_bridge():
         calls["shutdown"] += 1
         return web.json_response({"ok": True})
 
+    async def groups(request):
+        return web.json_response({"ok": True, "groups": _SAMPLE_GROUPS})
+
     app = web.Application()
     app.router.add_post("/send", send)
     app.router.add_get("/health", health)
+    app.router.add_get("/groups", groups)
     app.router.add_post("/register-callback", register)
     app.router.add_post("/shutdown", shutdown)
 
@@ -59,6 +69,64 @@ async def mock_bridge():
         yield f"http://127.0.0.1:{port}", calls
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_bridge_client_get_groups(mock_bridge):
+    base_url, _ = mock_bridge
+    client = BridgeClient(base_url)
+    try:
+        groups = await client.get_groups()
+    finally:
+        await client.close()
+    assert len(groups) == 2
+    assert groups[0]["jid"] == "111@g.us"
+    assert groups[1]["name"] == "Alerts"
+
+
+@pytest.mark.asyncio
+async def test_refresh_groups_updates_registry_and_file(mock_bridge, tmp_path):
+    from types import SimpleNamespace
+    base_url, _ = mock_bridge
+    client = BridgeClient(base_url)
+
+    paths = SimpleNamespace(data=tmp_path)
+    registry = SimpleNamespace(whatsapp_groups=None, paths=paths)
+    transport = WhatsAppTransport(
+        bridge_path="/nonexistent", bridge_port=0, callback_port=0,
+        client=client, spawn=False,
+    )
+    transport._registry = registry  # type: ignore[assignment]
+    transport._running = True
+
+    await transport._refresh_groups()
+    await client.close()
+
+    assert registry.whatsapp_groups == _SAMPLE_GROUPS
+    saved = json.loads((tmp_path / "whatsapp_groups.json").read_text())
+    assert saved == _SAMPLE_GROUPS
+
+
+@pytest.mark.asyncio
+async def test_refresh_groups_skips_when_not_logged_in(tmp_path):
+    class _NotLoggedInClient:
+        async def health(self):
+            return {"ok": True, "logged_in": False}
+        async def close(self):
+            pass
+
+    from types import SimpleNamespace
+    registry = SimpleNamespace(whatsapp_groups=None, paths=SimpleNamespace(data=tmp_path))
+    transport = WhatsAppTransport(
+        bridge_path="/nonexistent", bridge_port=0, callback_port=0,
+        client=_NotLoggedInClient(), spawn=False,
+    )
+    transport._registry = registry  # type: ignore[assignment]
+
+    await transport._refresh_groups()
+
+    assert registry.whatsapp_groups is None  # unchanged
+    assert not (tmp_path / "whatsapp_groups.json").exists()
 
 
 @pytest.mark.asyncio

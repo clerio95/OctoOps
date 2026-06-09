@@ -18,6 +18,37 @@ from octoops.core.contracts import ConfigField, ConfigFieldKind
 
 _VALID_ROLES = ("viewer", "operator", "admin")
 
+# Curated IANA zones offered as a dropdown in the wizard, so the common case is a
+# pick-from-list instead of typing. America/Sao_Paulo leads as the default zone;
+# anything outside this list can still be entered via the custom field.
+COMMON_TIMEZONES = (
+    "America/Sao_Paulo",
+    "America/Bahia",
+    "America/Fortaleza",
+    "America/Manaus",
+    "America/Rio_Branco",
+    "America/Argentina/Buenos_Aires",
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "America/Mexico_City",
+    "UTC",
+    "Europe/Lisbon",
+    "Europe/London",
+    "Europe/Madrid",
+    "Europe/Paris",
+    "Europe/Berlin",
+    "Europe/Moscow",
+    "Africa/Johannesburg",
+    "Asia/Dubai",
+    "Asia/Kolkata",
+    "Asia/Shanghai",
+    "Asia/Tokyo",
+    "Australia/Sydney",
+)
+DEFAULT_TIMEZONE = "America/Sao_Paulo"
+
 
 def detect_timezone(default: str = "UTC") -> str:
     """Best-effort local IANA timezone, for pre-filling the wizard's tz field.
@@ -66,7 +97,7 @@ class WizardState:
     whatsapp_command: str = "ask"
     whatsapp_role: str = "operator"
     # [core]
-    timezone: str = field(default_factory=detect_timezone)
+    timezone: str = field(default_factory=lambda: detect_timezone(DEFAULT_TIMEZONE))
     allowed_user_ids: list[str] = field(default_factory=list)
     operator_user_ids: list[str] = field(default_factory=list)
     admin_user_ids: list[str] = field(default_factory=list)

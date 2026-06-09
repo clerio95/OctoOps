@@ -29,21 +29,22 @@ def load(ctx: ModuleContext) -> ModuleRegistration:
     )
 
 
-async def handle_status(request: Request, ctx: ModuleContext) -> Response:
-    registry = ctx.registry
+def build_status_text(registry) -> str:
+    """Return the status body (uptime + modules). Reusable by startup notifications."""
     tz = ZoneInfo(registry.config.core.timezone)
     uptime = datetime.now(tz) - registry.start_time
-
-    role = registry.permissions.role_for(request.user_id)
-    role_name = role.name if role is not None else "unknown"
-
     modules = registry.module_names
     modules_line = ", ".join(sorted(modules)) if modules else "(none)"
-
-    text = (
+    return (
         "🐙 *OctoOps status*\n"
         f"Uptime: {humanize_timedelta(uptime)}\n"
-        f"Modules ({len(modules)}): {modules_line}\n"
-        f"Your role: {role_name}"
+        f"Modules ({len(modules)}): {modules_line}"
     )
+
+
+async def handle_status(request: Request, ctx: ModuleContext) -> Response:
+    registry = ctx.registry
+    role = registry.permissions.role_for(request.user_id)
+    role_name = role.name if role is not None else "unknown"
+    text = build_status_text(registry) + f"\nYour role: {role_name}"
     return Response(text=text, chat_id=request.chat_id)

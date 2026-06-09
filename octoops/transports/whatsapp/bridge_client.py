@@ -36,6 +36,14 @@ class BridgeClient:
             resp.raise_for_status()
             return await resp.json(content_type=None)
 
+    async def get_groups(self) -> list[dict[str, Any]]:
+        """Return the bot's joined groups: [{"jid", "name", "participants"}, ...]."""
+        session = await self._session_get()
+        async with session.get(f"{self._base}/groups") as resp:
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+            return data.get("groups", [])
+
     async def register_callback(self, url: str) -> dict[str, Any]:
         session = await self._session_get()
         async with session.post(

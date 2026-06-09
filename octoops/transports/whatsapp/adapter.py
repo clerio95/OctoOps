@@ -19,12 +19,14 @@ mirroring the Telegram allowlist gate).
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
 from aiohttp import web
 
 from octoops.core.logging import get_logger
+from octoops.modules.status import build_status_text
 from octoops.shared.models import Request, Response, Role, TransportSource
 from octoops.transports import Transport
 
@@ -73,6 +75,7 @@ class WhatsAppTransport(Transport):
         *,
         client: BridgeClient | None = None,
         spawn: bool = True,
+        admin_chat_ids: Iterable[str] | None = None,
         inbound_enabled: bool = False,
         allow: Iterable[str] | None = None,
         command: str = "ask",
@@ -87,12 +90,15 @@ class WhatsAppTransport(Transport):
         self._proc: asyncio.subprocess.Process | None = None
         self._runner: web.AppRunner | None = None
         self._supervisor: asyncio.Task | None = None
+        # Admin JIDs to send a startup status message to once the bridge is healthy.
+        self._admin_chat_ids: list[str] = list(admin_chat_ids or [])
         # Inbound (brain-only) routing — off unless enabled and a router is set.
         self._inbound_enabled = inbound_enabled
         self._allow = {normalize_number(x) for x in (allow or [])}
         self._command = command
         self._role = role
         self._router: "Router | None" = None
+        self._registry: "Registry | None" = None
 
     @property
     def name(self) -> str:
@@ -101,6 +107,7 @@ class WhatsAppTransport(Transport):
     async def run(self, router: "Router", registry: "Registry") -> None:
         self._running = True
         self._router = router
+        self._registry = registry
         try:
             await self._start_callback_server()
             if self._spawn:
@@ -201,6 +208,8 @@ class WhatsAppTransport(Transport):
             self._proc = proc
             if await self._await_health():
                 await self._register_callback()
+                await self._refresh_groups()
+                await self._notify_admins()
                 backoff = 1
             await proc.wait()
             self._proc = None
@@ -237,6 +246,51 @@ class WhatsAppTransport(Transport):
             await asyncio.sleep(_HEALTH_INTERVAL)
         _log.warning("whatsapp.health_timeout")
         return False
+
+    async def _refresh_groups(self) -> None:
+        """Fetch joined groups from the bridge, cache on registry, write to data/."""
+        if self._registry is None:
+            return
+        try:
+            health = await self._client.health()
+            if not health.get("logged_in"):
+                _log.info("whatsapp.groups_skipped", reason="not_logged_in")
+                return
+            groups = await self._client.get_groups()
+            self._registry.whatsapp_groups = groups
+            _log.info("whatsapp.groups_fetched", count=len(groups))
+            if self._registry.paths is not None:
+                data_dir = self._registry.paths.data
+                data_dir.mkdir(parents=True, exist_ok=True)
+                path = data_dir / "whatsapp_groups.json"
+                path.write_text(
+                    json.dumps(groups, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                _log.info("whatsapp.groups_saved", path=str(path))
+        except Exception as exc:  # noqa: BLE001 - discovery must never crash the supervisor
+            _log.warning("whatsapp.groups_refresh_failed", error=str(exc))
+
+    async def _notify_admins(self) -> None:
+        if not self._admin_chat_ids:
+            return
+        reg = self._registry
+        if reg is not None:
+            md = build_status_text(reg)
+            # Strip markdown bold markers — WhatsApp uses its own formatting.
+            text = md.replace("*OctoOps status*", "OctoOps started").replace("*", "")
+        else:
+            text = "OctoOps started."
+        try:
+            await self.send(
+                Response(
+                    text=text,
+                    chat_id=self._admin_chat_ids[0],
+                    whatsapp_chat_ids=list(self._admin_chat_ids),
+                )
+            )
+            _log.info("whatsapp.admin_notified", count=len(self._admin_chat_ids))
+        except Exception as exc:  # noqa: BLE001 - best effort
+            _log.warning("whatsapp.admin_notify_failed", error=str(exc))
 
     async def _register_callback(self) -> None:
         url = f"http://127.0.0.1:{self._callback_port}/incoming"

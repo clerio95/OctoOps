@@ -17,6 +17,16 @@ from xml.sax.saxutils import escape
 TASK_NAME = "OctoOps"
 _SYSTEM_SID = "S-1-5-18"  # NT AUTHORITY\SYSTEM
 
+# run.bat is written to OCTOOPS_HOME and called by the scheduled task.
+# It creates the logs\ directory (so the redirect never fails on a fresh install)
+# and captures both stdout and stderr to a log file alongside octoops.log.
+_RUN_BAT = """\
+@echo off
+cd /d "%~dp0"
+mkdir logs 2>nul
+"{python_exe}" -m octoops >> logs\\octoops-stdout.log 2>&1
+"""
+
 _UNINSTALL_BAT = """\
 @echo off
 setlocal
@@ -68,7 +78,7 @@ def build_task_xml(command: str, arguments: str, working_dir: str) -> str:
     <Enabled>true</Enabled>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
-      <Count>3</Count>
+      <Count>10</Count>
     </RestartOnFailure>
   </Settings>
   <Actions Context="Author">
@@ -86,6 +96,25 @@ def is_windows() -> bool:
     return sys.platform.startswith("win")
 
 
+def write_run_bat(home: Path, python_exe: str) -> Path | None:
+    """Write run.bat to OCTOOPS_HOME (Windows only).
+
+    run.bat is called by the scheduled task. It creates logs\\ before redirecting
+    stdout/stderr so the log file is always available even on a fresh install where
+    configure_logging hasn't run yet. This captures Python tracebacks and pre-logging
+    startup errors that would otherwise vanish under SYSTEM's headless session.
+
+    Log files produced:
+      logs\\octoops.log        — structured app log (created by configure_logging)
+      logs\\octoops-stdout.log — raw stdout/stderr captured by run.bat
+    """
+    if not is_windows():
+        return None
+    bat = home / "run.bat"
+    bat.write_text(_RUN_BAT.format(python_exe=python_exe), encoding="utf-8")
+    return bat
+
+
 def register_task(
     python_exe: str,
     working_dir: str,
@@ -93,13 +122,14 @@ def register_task(
 ) -> tuple[bool, str]:
     """Register (or replace) the boot task. Returns (ok, message).
 
-    The command is the running interpreter so the task uses the same venv;
-    working_dir is the base directory (so OCTOOPS_HOME resolution works).
+    Writes run.bat to working_dir to capture stdout/stderr, then registers a
+    Task Scheduler task (SYSTEM, BootTrigger, restart 10x/1min) that calls it.
     """
     if not is_windows():
         return (False, "skipped: Task Scheduler registration is Windows-only")
 
-    xml = build_task_xml(python_exe, "-m octoops", working_dir)
+    write_run_bat(Path(working_dir), python_exe)
+    xml = build_task_xml("cmd.exe", "/c run.bat", working_dir)
     tmp = Path(tempfile.gettempdir()) / "octoops-task.xml"
     tmp.write_text(xml, encoding="utf-16")
     try:
