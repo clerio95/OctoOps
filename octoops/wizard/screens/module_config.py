@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.widgets import Input, Label, Static
+from textual.widgets import Checkbox, Input, Label, Static
 
 from octoops.core.contracts import ConfigField, ConfigFieldKind
 from octoops.wizard.screens.base import BaseStep
@@ -56,7 +56,19 @@ class ModuleConfigStep(BaseStep):
                     placeholder=field_def.default or "",
                     id=input_id,
                 )
+                if field_def.kind is ConfigFieldKind.Password:
+                    yield Checkbox(
+                        self.tr("module_config.show_secret"),
+                        value=False,
+                        id=f"{input_id}__show",
+                    )
                 self._fields.append((name, field_def, input_id))
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        checkbox_id = event.checkbox.id or ""
+        if checkbox_id.endswith("__show"):
+            target_id = checkbox_id[: -len("__show")]
+            self.query_one(f"#{target_id}", Input).password = not event.value
 
     def save(self) -> str | None:
         collected: dict[str, dict[str, object]] = {}

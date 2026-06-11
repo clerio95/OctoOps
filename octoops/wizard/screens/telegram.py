@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.widgets import Button, Input, Label, Static
+from textual.widgets import Button, Checkbox, Input, Label, Static
 
 from octoops.wizard.screens.base import BaseStep
 from octoops.wizard.state import validate_bot_token, validate_chat_id
@@ -31,12 +31,18 @@ class TelegramStep(BaseStep):
             id="bot_token",
             placeholder="123456:ABC-...",
         )
+        yield Checkbox(self.tr("telegram.show_token"), value=False, id="show_token")
         yield Button(self.tr("telegram.verify_button"), id="pair")
         yield Static("", id="pair_status", classes="preview")
         yield Label(self.tr("telegram.admin_label"))
+        yield Static(self.tr("telegram.userid_hint"), classes="warn", id="userid_hint")
         yield Input(
             value=self.state.admin_chat_id, id="admin_chat_id", placeholder="123456789"
         )
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "show_token":
+            self.query_one("#bot_token", Input).password = not event.value
 
     # --- guided pairing -------------------------------------------------------
 

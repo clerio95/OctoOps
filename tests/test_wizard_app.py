@@ -170,24 +170,109 @@ async def test_whatsapp_screen_saves_admin_chat_ids():
     assert app.state.whatsapp_admin_chat_ids == ["5511999998888", "5511888887777"]
 
 
+async def _telegram_token_input(app, pilot):
+    await pilot.pause()
+    await _skip_language(app, pilot)
+    _press(app, "next")  # welcome -> telegram (has a bot_token Input)
+    await pilot.pause()
+    token = app.screen.query_one("#bot_token", Input)
+    token.focus()
+    await pilot.pause()
+    return token
+
+
 @pytest.mark.asyncio
 async def test_ctrl_v_inserts_clipboard_text_into_focused_input(monkeypatch):
-    # Regression guard: the paste path must call the *public* insert API and
+    # Regression guard: the paste fallback must call the *public* insert API and
     # actually drop the clipboard text into the focused Input. The clipboard
-    # reader is stubbed so this runs on any platform.
+    # reader is stubbed so this runs on any platform. The insert is deferred by
+    # PASTE_FALLBACK_DELAY (native-paste dedup), so the test waits it out.
     monkeypatch.setattr(app_mod, "_clipboard_paste", lambda: "PASTED")
     app = WizardApp(discovered=_discovered(), config_exists=False)
+    app.PASTE_FALLBACK_DELAY = 0.05
     async with app.run_test() as pilot:
-        await pilot.pause()
-        await _skip_language(app, pilot)
-        _press(app, "next")  # welcome -> telegram (has a bot_token Input)
-        await pilot.pause()
-        token = app.screen.query_one("#bot_token", Input)
-        token.focus()
-        await pilot.pause()
+        token = await _telegram_token_input(app, pilot)
         app.on_key(events.Key("ctrl+v", None))
-        await pilot.pause()
+        await pilot.pause(0.3)
         assert token.value == "PASTED"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_v_key_does_not_double_paste(monkeypatch):
+    # One real ctrl+v key dispatch must insert the clipboard text exactly once:
+    # Input has its own ctrl+v binding (pastes Textual's internal clipboard)
+    # which previously ran IN ADDITION to the app-level fallback.
+    monkeypatch.setattr(app_mod, "_clipboard_paste", lambda: "PASTED")
+    app = WizardApp(discovered=_discovered(), config_exists=False)
+    app.PASTE_FALLBACK_DELAY = 0.05
+    async with app.run_test() as pilot:
+        token = await _telegram_token_input(app, pilot)
+        app._clipboard = "INTERNAL"  # would be appended by Input's own binding
+        await pilot.press("ctrl+v")
+        await pilot.pause(0.3)
+        assert token.value == "PASTED"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_v_skips_fallback_when_terminal_pasted_natively(monkeypatch):
+    # Terminals that paste natively AND forward the raw ctrl+v key were the
+    # doubling bug from live testing. Whether the native paste lands before the
+    # key or during the fallback window, only one copy may remain.
+    monkeypatch.setattr(app_mod, "_clipboard_paste", lambda: "PASTED")
+    app = WizardApp(discovered=_discovered(), config_exists=False)
+    app.PASTE_FALLBACK_DELAY = 0.05
+    async with app.run_test() as pilot:
+        token = await _telegram_token_input(app, pilot)
+        # Native paste arrived first (bracketed paste -> Input inserted it).
+        token.insert_text_at_cursor("PASTED")
+        app.on_key(events.Key("ctrl+v", None))
+        await pilot.pause(0.3)
+        assert token.value == "PASTED"
+        # Native paste arrives DURING the fallback window (conhost keystroke
+        # injection): the fallback must notice the change and stand down.
+        token.value = ""
+        app.on_key(events.Key("ctrl+v", None))
+        token.insert_text_at_cursor("PASTED")
+        await pilot.pause(0.3)
+        assert token.value == "PASTED"
+
+
+@pytest.mark.asyncio
+async def test_show_token_checkbox_toggles_password_masking():
+    from textual.widgets import Checkbox
+
+    app = WizardApp(discovered=_discovered(), config_exists=False)
+    async with app.run_test() as pilot:
+        token = await _telegram_token_input(app, pilot)
+        assert token.password is True  # hidden by default
+        app.screen.query_one("#show_token", Checkbox).value = True
+        await pilot.pause()
+        assert token.password is False
+        app.screen.query_one("#show_token", Checkbox).value = False
+        await pilot.pause()
+        assert token.password is True
+
+
+@pytest.mark.asyncio
+async def test_userid_hint_shown_on_telegram_and_core_screens():
+    # Live-testing feedback: users didn't know how to find a Telegram user ID.
+    # Both ID-entry screens must mention the @userinfobot lookup path.
+    from textual.widgets import Static, Switch
+
+    app = WizardApp(discovered=_discovered(), config_exists=False)
+    async with app.run_test() as pilot:
+        await _telegram_token_input(app, pilot)
+        hint = app.screen.query_one("#userid_hint", Static)
+        assert "@userinfobot" in str(hint.render())
+        app.screen.query_one("#bot_token", Input).value = "123456:ABC-def"
+        app.screen.query_one("#admin_chat_id", Input).value = "999"
+        _press(app, "next")  # telegram -> whatsapp
+        await pilot.pause()
+        _press(app, "next")  # whatsapp -> core
+        await pilot.pause()
+        assert app.screen.STEP_ID == "core"
+        hint = app.screen.query_one("#userid_hint", Static)
+        assert "@userinfobot" in str(hint.render())
 
 
 @pytest.mark.asyncio

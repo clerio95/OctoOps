@@ -87,6 +87,22 @@ _CATALOG: dict[str, dict[str, str]] = {
             " — abra o chat e envie /newbot."
         ),
     },
+    "telegram.show_token": {
+        "en": "Show token",
+        "pt-BR": "Mostrar token",
+    },
+    "telegram.userid_hint": {
+        "en": (
+            "Tip: the Verify button above detects your chat ID for you. To find "
+            "it manually, message @userinfobot on Telegram and send /start — it "
+            "replies with your numeric ID."
+        ),
+        "pt-BR": (
+            "Dica: o botão Verificar acima detecta seu chat ID automaticamente. "
+            "Para descobrir manualmente, fale com o @userinfobot no Telegram e "
+            "envie /start — ele responde com o seu ID numérico."
+        ),
+    },
     "telegram.verify_button": {
         "en": "Verify token & auto-detect chat ID",
         "pt-BR": "Verificar token e detectar o chat ID",
@@ -263,6 +279,17 @@ _CATALOG: dict[str, dict[str, str]] = {
         "en": "e.g. America/Sao_Paulo",
         "pt-BR": "ex.: America/Sao_Paulo",
     },
+    "core.userid_hint": {
+        "en": (
+            "To find someone's Telegram user ID: ask them to open @userinfobot "
+            "on Telegram and send /start — it replies with their numeric ID."
+        ),
+        "pt-BR": (
+            "Para descobrir o ID de usuário do Telegram de alguém: peça à pessoa "
+            "para abrir o @userinfobot no Telegram e enviar /start — ele responde "
+            "com o ID numérico."
+        ),
+    },
     "core.allowed_label": {
         "en": "Allowed Telegram user IDs (space/comma separated)",
         "pt-BR": "IDs de usuário do Telegram permitidos (separados por espaço/vírgula)",
@@ -317,6 +344,10 @@ _CATALOG: dict[str, dict[str, str]] = {
     "module_config.field_label": {
         "en": "{label} ({req}) — {description}",
         "pt-BR": "{label} ({req}) — {description}",
+    },
+    "module_config.show_secret": {
+        "en": "Show value",
+        "pt-BR": "Mostrar valor",
     },
     "module_config.err": {
         "en": "{module}.{key}: {err}",

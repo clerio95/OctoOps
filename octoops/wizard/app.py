@@ -133,20 +133,43 @@ class WizardApp(App):
     def action_cancel(self) -> None:
         self.exit(None)
 
+    # How long the manual clipboard fallback waits before inserting; if a
+    # native paste lands in the meantime, the fallback is skipped. Class attr
+    # so tests can shrink it.
+    PASTE_FALLBACK_DELAY = 0.25
+
     def on_key(self, event: events.Key) -> None:
         # Modern terminals (Windows Terminal, most Linux/macOS emulators) turn
         # Ctrl+V into a bracketed-paste sequence that Textual delivers as a Paste
-        # event, which Input handles natively. This manual path is the fallback
-        # for terminals that send Ctrl+V as a raw key (e.g. legacy conhost/cmd).
+        # event, which Input handles natively; legacy conhost injects the text as
+        # keystrokes. Some terminals deliver the raw ctrl+v key AS WELL as the
+        # native paste, so inserting immediately here doubles the text. The
+        # manual fallback is therefore deferred: it only inserts if the focused
+        # Input is still unchanged once the delay elapses (no native paste came).
         if event.key != "ctrl+v":
             return
         focused = self.focused
         if not isinstance(focused, Input):
             return
-        text = _clipboard_paste()
-        if text:
-            focused.insert_text_at_cursor(text)
+        clipboard = _clipboard_paste()
+        # Input is single-line: paste only the first line, like Input._on_paste.
+        text = clipboard.splitlines()[0] if clipboard else ""
+        if not text:
+            return
+        # Take over fully: Input has its own ctrl+v binding (pastes Textual's
+        # internal clipboard) that would otherwise run in addition to this.
         event.stop()
+        event.prevent_default()
+        if focused.value[: focused.cursor_position].endswith(text):
+            # The terminal already pasted natively just before this key arrived.
+            return
+        before = focused.value
+
+        def _fallback() -> None:
+            if focused.is_mounted and focused.value == before:
+                focused.insert_text_at_cursor(text)
+
+        self.set_timer(self.PASTE_FALLBACK_DELAY, _fallback)
 
 
 def _clipboard_paste() -> str:

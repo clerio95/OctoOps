@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from textual.app import ComposeResult
-from textual.widgets import Input, Label, Select
+from textual.widgets import Input, Label, Select, Static
 
 from octoops.wizard.screens.base import BaseStep
 from octoops.wizard.state import (
@@ -40,6 +40,7 @@ class CoreSettingsStep(BaseStep):
             placeholder=self.tr("core.tz_placeholder"),
             id="timezone_custom",
         )
+        yield Static(self.tr("core.userid_hint"), classes="warn", id="userid_hint")
         yield Label(self.tr("core.allowed_label"))
         yield Input(value=" ".join(self.state.allowed_user_ids), id="allowed")
         yield Label(self.tr("core.operators_label"))
