@@ -1,7 +1,7 @@
 // Whatsmeow bridge sidecar for OctoOps.
 //
 // Exposes a local HTTP API that OctoOps drives:
-//   GET  /health              → {"ok":true,"logged_in":<bool>}
+//   GET  /health              → {"ok":true,"logged_in":<bool>,"outdated":<bool>}
 //   POST /send                ← {"chat_id":"<jid>","text":"<msg>"}
 //   POST /register-callback   ← {"url":"http://127.0.0.1:<port>/incoming"}
 //   POST /shutdown
@@ -40,6 +40,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -65,6 +66,9 @@ var (
 	// endpoint requires "Authorization: Bearer <token>" and the outbound callback
 	// presents it. Empty = unauthenticated (legacy / interactive pairing only).
 	bridgeToken string
+	// Set when WhatsApp rejects this client as outdated (error 405). Surfaced in
+	// /health so OctoOps can auto-rebuild the bridge instead of failing silently.
+	clientOutdated atomic.Bool
 )
 
 // authOK reports whether a request may proceed: true when no token is configured,
@@ -200,6 +204,8 @@ func onEvent(evt interface{}) {
 // update whatsmeow and rebuild.
 func onConnectFailure(v *events.ConnectFailure) {
 	if v.Reason == events.ConnectFailureClientOutdated {
+		// Surface the outdated state in /health so OctoOps can auto-rebuild.
+		clientOutdated.Store(true)
 		log.Println("==================================================================")
 		log.Println("[BRIDGE] WhatsApp rejected this client as OUTDATED (error 405).")
 		log.Println("[BRIDGE] The embedded whatsmeow version is too old for WhatsApp.")
@@ -331,6 +337,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":        true,
 		"logged_in": loggedIn,
+		"outdated":  clientOutdated.Load(),
 	})
 }
 

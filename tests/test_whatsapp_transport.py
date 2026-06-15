@@ -390,3 +390,121 @@ async def test_unpaired_notice_is_localized(registry):
     transport._registry = registry
     assert await transport._notify_unpaired() is True
     assert "não está pareado" in telegram.sent[0].text
+
+
+# --- auto-update on outdated (error 405) ----------------------------------------
+
+
+class _OutdatedClient:
+    """Bridge client reporting outdated until the test clears the flag."""
+
+    def __init__(self):
+        self.outdated = True
+        self.logged_in = False
+
+    async def health(self):
+        return {"ok": True, "logged_in": self.logged_in, "outdated": self.outdated}
+
+    async def shutdown(self):
+        pass
+
+    async def close(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_outdated_triggers_auto_rebuild(registry, monkeypatch):
+    """health.outdated -> rebuild attempted, _wait_logged_in stops, admin alerted."""
+    telegram = _FakeTelegram()
+    registry.transports["telegram"] = telegram
+    transport = WhatsAppTransport(
+        "/nonexistent", 0, 0, client=_OutdatedClient(), spawn=False
+    )
+    transport._registry = registry
+    transport._running = True
+
+    calls = []
+
+    async def fake_rebuild(proc):
+        calls.append(proc)
+        return True
+
+    monkeypatch.setattr(transport, "_rebuild_bridge", fake_rebuild)
+
+    # outdated -> _handle_outdated returns True -> _wait_logged_in returns False
+    assert await transport._wait_logged_in(_DoneProc()) is False
+    assert len(calls) == 1
+    assert transport._last_rebuild_at is not None
+    # "updating…" then "updated. Reconnecting…"
+    assert len(telegram.sent) == 2
+    assert "outdated" in telegram.sent[0].text.lower()
+    assert "updated" in telegram.sent[1].text.lower()
+
+
+@pytest.mark.asyncio
+async def test_outdated_cooldown_skips_repeated_rebuild(registry, monkeypatch):
+    """Within the cooldown a second outdated event must NOT rebuild again."""
+    telegram = _FakeTelegram()
+    registry.transports["telegram"] = telegram
+    transport = WhatsAppTransport("/nonexistent", 0, 0, spawn=False)
+    transport._registry = registry
+
+    rebuilds = []
+
+    async def fake_rebuild(proc):
+        rebuilds.append(proc)
+        return False  # rebuilt bridge still rejected
+
+    monkeypatch.setattr(transport, "_rebuild_bridge", fake_rebuild)
+
+    # First outdated event: rebuild attempted (and fails -> manual fallback alert).
+    assert await transport._handle_outdated(_DoneProc()) is True
+    assert len(rebuilds) == 1
+    # Second event while cooling down: skipped, no extra rebuild.
+    assert await transport._handle_outdated(_DoneProc()) is False
+    assert len(rebuilds) == 1
+    # Manual-steps alert sent once for the cooldown window, not per poll.
+    cooldown_alerts = [m for m in telegram.sent if "go get" in m.text]
+    assert len(cooldown_alerts) >= 1
+
+
+@pytest.mark.asyncio
+async def test_rebuild_aborts_when_go_missing(registry, monkeypatch):
+    import octoops.transports.whatsapp.adapter as adapter_mod
+
+    monkeypatch.setattr(adapter_mod.shutil, "which", lambda _name: None)
+    transport = WhatsAppTransport(
+        "/nonexistent", 0, 0, client=_OutdatedClient(), spawn=False
+    )
+    transport._registry = registry
+    # No source dir resolvable + no go -> returns False without touching the proc.
+    assert await transport._rebuild_bridge(_DoneProc()) is False
+
+
+@pytest.mark.asyncio
+async def test_outdated_alert_is_localized(registry, monkeypatch):
+    registry.config.core.language = "pt-BR"
+    telegram = _FakeTelegram()
+    registry.transports["telegram"] = telegram
+    transport = WhatsAppTransport("/nonexistent", 0, 0, spawn=False)
+    transport._registry = registry
+
+    async def fake_rebuild(proc):
+        return True
+
+    monkeypatch.setattr(transport, "_rebuild_bridge", fake_rebuild)
+    await transport._handle_outdated(_DoneProc())
+    assert "desatualizada" in telegram.sent[0].text
+
+
+def test_bridge_source_dir_and_output_path(registry, tmp_path):
+    from octoops.core.paths import AppPaths
+
+    (tmp_path / "whatsmeow-bridge").mkdir()
+    (tmp_path / "whatsmeow-bridge" / "main.go").write_text("package main\n")
+    registry.paths = AppPaths(home=tmp_path)
+    transport = WhatsAppTransport("./whatsmeow-bridge.exe", 0, 0, spawn=False)
+    transport._registry = registry
+    assert transport._bridge_source_dir() == tmp_path / "whatsmeow-bridge"
+    # Relative exe path resolves against home, not the test's CWD.
+    assert transport._bridge_output_path() == tmp_path / "whatsmeow-bridge.exe"

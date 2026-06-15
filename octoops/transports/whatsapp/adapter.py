@@ -24,6 +24,8 @@ import asyncio
 import hmac
 import json
 import secrets
+import shutil
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
@@ -51,6 +53,13 @@ _HEALTH_RETRIES = 30
 _HEALTH_INTERVAL = 1.0
 _PAIR_POLL_INTERVAL = 30.0
 _SHUTDOWN_TIMEOUT = 3.0
+# Auto-update: when WhatsApp rejects the bridge as outdated (error 405), OctoOps
+# rebuilds it from source with the Go toolchain. The cooldown stops a rebuild
+# loop if the rebuilt bridge is still rejected (e.g. whatsmeow upstream is itself
+# behind, or the build is a no-op). _BUILD_TIMEOUT bounds each go step.
+_REBUILD_COOLDOWN = 6 * 60 * 60.0
+_BUILD_TIMEOUT = 10 * 60.0
+_BRIDGE_SRC_DIRNAME = "whatsmeow-bridge"
 
 # Inbound payload field names we tolerate from the bridge (it's supplied
 # separately; code to the contract but don't depend on one exact field name).
@@ -112,6 +121,11 @@ class WhatsAppTransport(Transport):
         # (OctoOps→bridge requests AND the bridge→/incoming callback). Empty until
         # run() mints it, so direct unit tests of the handlers stay unauthenticated.
         self._bridge_token: str = ""
+        # Auto-update bookkeeping (see _handle_outdated). _last_rebuild_at gates
+        # the cooldown; the notified flag keeps the "still outdated" alert to once
+        # per cooldown window instead of every health poll.
+        self._last_rebuild_at: float | None = None
+        self._outdated_cooldown_notified = False
 
     @property
     def name(self) -> str:
@@ -414,6 +428,14 @@ class WhatsAppTransport(Transport):
                 health = await self._client.health()
             except Exception:  # noqa: BLE001 - bridge died/restarting; supervisor handles it
                 return False
+            if health.get("outdated"):
+                # WhatsApp rejected the bridge as too old (error 405). Auto-rebuild
+                # it from source; if a rebuild happened the proc is gone and the
+                # supervisor respawns the new binary, so stop waiting here.
+                if await self._handle_outdated(proc):
+                    return False
+                await asyncio.sleep(_PAIR_POLL_INTERVAL)
+                continue
             if health.get("logged_in"):
                 return True
             if not notified:
@@ -431,10 +453,7 @@ class WhatsAppTransport(Transport):
         reg = self._registry
         if reg is None:
             return True  # nothing to notify through; don't keep trying
-        telegram = reg.transports.get("telegram")
-        if telegram is None:
-            return False
-        pt = reg.config.core.language.strip().lower().startswith("pt")
+        pt = self._is_pt()
         text = (
             "⚠ WhatsApp não está pareado (sem sessão ativa). Rode "
             "`python -m octoops --setup` na máquina e escaneie o QR code. "
@@ -444,15 +463,204 @@ class WhatsAppTransport(Transport):
             "`python -m octoops --setup` on the machine and scan the QR code. "
             "WhatsApp stays offline until then."
         )
+        ok = await self._send_telegram_admin(text)
+        if ok:
+            _log.info("whatsapp.unpaired_admin_notified")
+        return ok
+
+    def _is_pt(self) -> bool:
+        reg = self._registry
+        if reg is None:
+            return False
+        return reg.config.core.language.strip().lower().startswith("pt")
+
+    async def _send_telegram_admin(self, text: str) -> bool:
+        """Send an admin alert over Telegram (best-effort).
+
+        Returns True when delivered, False when the Telegram transport isn't up
+        yet or the send fails. Used for the unpaired notice and the auto-update
+        alerts — Telegram is the reliable channel when WhatsApp itself is down.
+        """
+        reg = self._registry
+        if reg is None:
+            return False
+        telegram = reg.transports.get("telegram")
+        if telegram is None:
+            return False
         try:
             await telegram.send(
                 Response(text=text, chat_id=reg.config.telegram.admin_chat_id)
             )
-            _log.info("whatsapp.unpaired_admin_notified")
             return True
         except Exception as exc:  # noqa: BLE001 - telegram may not be started yet
-            _log.warning("whatsapp.unpaired_notify_failed", error=str(exc))
+            _log.warning("whatsapp.admin_telegram_failed", error=str(exc))
             return False
+
+    # --- auto-update on outdated (error 405) ----------------------------------
+
+    async def _handle_outdated(self, proc: asyncio.subprocess.Process) -> bool:
+        """React to WhatsApp rejecting the bridge as outdated (error 405).
+
+        Rebuilds the bridge from source with the Go toolchain (no re-pair: the
+        session lives in whatsmeow.db, only the binary changes). A cooldown stops
+        a rebuild loop when the freshly built bridge is *still* rejected. Returns
+        True if a rebuild was attempted (proc is then stopped and the supervisor
+        respawns the new binary); False if skipped while cooling down.
+        """
+        now = time.monotonic()
+        if (
+            self._last_rebuild_at is not None
+            and (now - self._last_rebuild_at) < _REBUILD_COOLDOWN
+        ):
+            if not self._outdated_cooldown_notified:
+                self._outdated_cooldown_notified = True
+                _log.error("whatsapp.bridge_still_outdated")
+                await self._send_telegram_admin(self._outdated_manual_text())
+            return False
+
+        self._last_rebuild_at = now
+        self._outdated_cooldown_notified = False
+        _log.error("whatsapp.bridge_outdated", action="auto_rebuild")
+        pt = self._is_pt()
+        await self._send_telegram_admin(
+            "⚠️ O WhatsApp rejeitou a ponte por estar desatualizada (erro 405). "
+            "Atualizando e recompilando automaticamente — pode levar alguns "
+            "minutos. O WhatsApp volta sozinho quando terminar (sem parear de novo)."
+            if pt
+            else "⚠️ WhatsApp rejected the bridge as outdated (error 405). "
+            "Updating and rebuilding it automatically — this can take a few "
+            "minutes. WhatsApp comes back on its own when it's done (no re-pairing)."
+        )
+        ok = await self._rebuild_bridge(proc)
+        if ok:
+            await self._send_telegram_admin(
+                "✅ Ponte do WhatsApp atualizada. Reconectando…"
+                if pt
+                else "✅ WhatsApp bridge updated. Reconnecting…"
+            )
+        else:
+            await self._send_telegram_admin(self._outdated_manual_text())
+        return True
+
+    def _outdated_manual_text(self) -> str:
+        """Fallback message with manual rebuild steps when auto-update can't run."""
+        if self._is_pt():
+            return (
+                "❌ Não consegui atualizar a ponte do WhatsApp automaticamente. "
+                "Na máquina, abra a pasta whatsmeow-bridge e rode:\n"
+                "  go get -u go.mau.fi/whatsmeow@latest\n"
+                "  go mod tidy\n"
+                "  go build -o ..\\whatsmeow-bridge.exe .\n"
+                "Depois reinicie o OctoOps. (Precisa do Go instalado: https://go.dev/dl)"
+            )
+        return (
+            "❌ Couldn't auto-update the WhatsApp bridge. On the machine, open the "
+            "whatsmeow-bridge folder and run:\n"
+            "  go get -u go.mau.fi/whatsmeow@latest\n"
+            "  go mod tidy\n"
+            "  go build -o ..\\whatsmeow-bridge.exe .\n"
+            "Then restart OctoOps. (Needs Go installed: https://go.dev/dl)"
+        )
+
+    def _bridge_source_dir(self) -> Path | None:
+        """Locate the bridge Go source (the folder holding main.go/go.mod)."""
+        candidates: list[Path] = []
+        if self._registry is not None and self._registry.paths is not None:
+            candidates.append(self._registry.paths.home / _BRIDGE_SRC_DIRNAME)
+        candidates.append(
+            Path(self._bridge_path).resolve().parent / _BRIDGE_SRC_DIRNAME
+        )
+        for cand in candidates:
+            if (cand / "main.go").exists():
+                return cand
+        return None
+
+    def _bridge_output_path(self) -> Path:
+        """Absolute path the rebuilt binary must be written to (the spawned exe)."""
+        if self._registry is not None and self._registry.paths is not None:
+            return self._registry.paths.resolve(self._bridge_path)
+        return Path(self._bridge_path).resolve()
+
+    async def _rebuild_bridge(self, proc: asyncio.subprocess.Process) -> bool:
+        """Stop the bridge, rebuild it from source with Go, leave it stopped.
+
+        The supervisor respawns it after this returns. Stopping first is required
+        on Windows: the running .exe is locked, so `go build -o ...exe` would fail
+        until the process exits. On any failure the old binary is left intact.
+        """
+        src = self._bridge_source_dir()
+        if src is None:
+            _log.error("whatsapp.rebuild_no_source")
+            return False
+        go = shutil.which("go")
+        if go is None:
+            _log.error("whatsapp.rebuild_no_go")
+            return False
+        out_path = self._bridge_output_path()
+        # Free the .exe (Windows locks a running binary) before building.
+        await self._stop_bridge_proc(proc)
+        steps = (
+            ("go_get", [go, "get", "-u", "go.mau.fi/whatsmeow@latest"]),
+            ("go_mod_tidy", [go, "mod", "tidy"]),
+            ("go_build", [go, "build", "-o", str(out_path), "."]),
+        )
+        for label, cmd in steps:
+            rc, output = await self._run_build_step(cmd, src)
+            if rc != 0:
+                _log.error(
+                    "whatsapp.rebuild_failed",
+                    step=label,
+                    code=rc,
+                    output=output[-800:],
+                )
+                return False
+        _log.info("whatsapp.rebuild_succeeded", output_path=str(out_path))
+        return True
+
+    async def _run_build_step(self, cmd: list[str], cwd: Path) -> tuple[int, str]:
+        """Run one go command in cwd, capturing combined output. (rc, output)."""
+        try:
+            step = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except Exception as exc:  # noqa: BLE001 - go missing/unspawnable
+            return 1, str(exc)
+        try:
+            out, _ = await asyncio.wait_for(
+                step.communicate(), timeout=_BUILD_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            try:
+                step.terminate()
+            except ProcessLookupError:
+                pass
+            return 1, "build step timed out"
+        return step.returncode or 0, out.decode("utf-8", "replace")
+
+    async def _stop_bridge_proc(self, proc: asyncio.subprocess.Process) -> None:
+        """Ask the bridge to shut down cleanly, then force it; wait for exit."""
+        if proc.returncode is not None:
+            return
+        try:
+            await asyncio.wait_for(self._client.shutdown(), timeout=_SHUTDOWN_TIMEOUT)
+        except Exception:  # noqa: BLE001 - best effort; fall through to terminate
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_SHUTDOWN_TIMEOUT)
+            return
+        except Exception:  # noqa: BLE001 - clean shutdown didn't land; force it
+            pass
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=_SHUTDOWN_TIMEOUT)
+        except Exception:  # noqa: BLE001 - leave it to the supervisor/OS
+            pass
 
     async def _refresh_groups(self) -> None:
         """Fetch joined groups from the bridge, cache on registry, write to data/."""
