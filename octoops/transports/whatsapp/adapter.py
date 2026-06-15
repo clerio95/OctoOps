@@ -255,7 +255,15 @@ class WhatsAppTransport(Transport):
 
         if normalize_number(sender) not in self._allow:
             # Not whitelisted -> stay invisible, like the Telegram allowlist gate.
-            _log.info("whatsapp.incoming_dropped", reason="not_allowed")
+            # Log the normalized sender + address kind (pn vs WhatsApp's opaque @lid)
+            # so an allowlist that lists a phone number but receives a LID is diagnosable.
+            kind = sender.split("@", 1)[1] if "@" in sender else "bare"
+            _log.info(
+                "whatsapp.incoming_dropped",
+                reason="not_allowed",
+                sender=normalize_number(sender),
+                kind=kind,
+            )
             return web.json_response(self._NOT_ROUTED)
 
         user_id = normalize_number(sender)
