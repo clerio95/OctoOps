@@ -55,6 +55,7 @@ _SHUTDOWN_TIMEOUT = 3.0
 # Inbound payload field names we tolerate from the bridge (it's supplied
 # separately; code to the contract but don't depend on one exact field name).
 _SENDER_KEYS = ("from", "sender", "jid", "chat_id", "chat")
+_SENDER_PN_KEYS = ("sender_pn", "pn", "phone")
 _TEXT_KEYS = ("text", "body", "message", "content")
 
 
@@ -248,12 +249,19 @@ class WhatsAppTransport(Transport):
             return web.json_response(self._NOT_ROUTED)
 
         sender = _extract(body, _SENDER_KEYS)
+        sender_pn = _extract(body, _SENDER_PN_KEYS)
         text = _extract(body, _TEXT_KEYS)
         if not sender or not text:
             _log.info("whatsapp.incoming_ignored", reason="missing_sender_or_text")
             return web.json_response(self._NOT_ROUTED)
 
-        if normalize_number(sender) not in self._allow:
+        # WhatsApp may address a sender by an opaque LID instead of their phone
+        # number. The bridge forwards the phone number as sender_pn when it can
+        # resolve it; match the allowlist against either, so operators allowlist
+        # phone numbers and a raw LID still works as a fallback.
+        identities = {normalize_number(sender), normalize_number(sender_pn or "")}
+        identities.discard("")
+        if identities.isdisjoint(self._allow):
             # Not whitelisted -> stay invisible, like the Telegram allowlist gate.
             # Log the normalized sender + address kind (pn vs WhatsApp's opaque @lid)
             # so an allowlist that lists a phone number but receives a LID is diagnosable.
@@ -266,7 +274,8 @@ class WhatsAppTransport(Transport):
             )
             return web.json_response(self._NOT_ROUTED)
 
-        user_id = normalize_number(sender)
+        # Prefer the phone number as the stable, human-meaningful conversation id.
+        user_id = normalize_number(sender_pn) if sender_pn else normalize_number(sender)
         command = self._resolve_inbound_command(user_id, text)
         if command is None:
             _log.info("whatsapp.incoming_ignored", reason="no_route")

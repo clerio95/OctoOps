@@ -237,9 +237,37 @@ func handleMessage(msg *events.Message) {
 		return
 	}
 
+	// sender is what we reply to (the address WhatsApp used — may be a @lid).
+	// sender_pn is the phone number, so OctoOps can match allowlists that list
+	// phone numbers even when WhatsApp delivers the message under an opaque LID.
 	sender := msg.Info.Sender.String()
-	payload, _ := json.Marshal(map[string]string{"sender": sender, "text": text})
+	payload, _ := json.Marshal(map[string]string{
+		"sender":    sender,
+		"sender_pn": resolvePN(msg.Info),
+		"text":      text,
+	})
 	go postCallback(url, payload)
+}
+
+// resolvePN returns the phone-number JID for a message's sender, or "" if it
+// can't be determined. WhatsApp may address a sender by an opaque LID instead of
+// their phone number; SenderAlt carries the phone number in that case (delivered
+// with the message), with a store lookup as a best-effort fallback. Operators
+// allowlist phone numbers, so OctoOps needs the PN to match seamlessly.
+func resolvePN(info types.MessageInfo) string {
+	if info.AddressingMode != types.AddressingModeLID {
+		// Sender is already addressed by phone number.
+		return info.Sender.String()
+	}
+	if !info.SenderAlt.IsEmpty() && info.SenderAlt.User != "" {
+		return info.SenderAlt.String()
+	}
+	if waClient != nil {
+		if pn, err := waClient.Store.LIDs.GetPNForLID(context.Background(), info.Sender); err == nil && pn.User != "" {
+			return pn.String()
+		}
+	}
+	return ""
 }
 
 func postCallback(url string, payload []byte) {

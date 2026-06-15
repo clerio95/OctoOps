@@ -162,6 +162,34 @@ async def test_non_allowlisted_sender_dropped_silently():
     assert client.sent == []
 
 
+async def test_lid_sender_matches_phone_allowlist():
+    """WhatsApp delivers a @lid sender; allowlisting the phone number still works."""
+    router = _FakeRouter(response=Response(text="42", chat_id="ignored"))
+    t, client = _transport(inbound=True, allow=["5511999998888"], router=router)
+    lid = "142013227876439@lid"
+    resp = await t._handle_incoming(
+        _FakeReq(
+            {"sender": lid, "sender_pn": "5511999998888@s.whatsapp.net", "text": "q"}
+        )
+    )
+    assert await _body(resp) == {"ok": True, "routed": True}
+    req, _ = router.dispatched[0]
+    assert req.user_id == "5511999998888"  # phone number preferred as the id
+    assert client.sent == [(lid, "42")]  # reply still goes to the original LID JID
+
+
+async def test_lid_sender_falls_back_to_lid_allowlist():
+    """With no resolvable phone number, allowlisting the raw LID still works."""
+    router = _FakeRouter(response=Response(text="ok", chat_id="c"))
+    t, client = _transport(inbound=True, allow=["142013227876439"], router=router)
+    resp = await t._handle_incoming(
+        _FakeReq({"sender": "142013227876439@lid", "text": "q"})
+    )
+    assert await _body(resp) == {"ok": True, "routed": True}
+    req, _ = router.dispatched[0]
+    assert req.user_id == "142013227876439"
+
+
 async def test_command_is_forced_even_if_text_looks_like_a_command():
     """A WhatsApp user typing '/grant ...' still only reaches the brain."""
     router = _FakeRouter(response=Response(text="ok", chat_id="c"))
