@@ -182,11 +182,40 @@ func connectWA() {
 	}
 }
 
-// onEvent handles incoming WhatsApp events. Only private text messages are
-// forwarded to the registered callback URL.
+// onEvent handles incoming WhatsApp events. Private text messages are forwarded
+// to the registered callback URL; connection failures are logged with an
+// actionable hint so an outdated client is obvious instead of a silent outage.
 func onEvent(evt interface{}) {
-	msg, ok := evt.(*events.Message)
-	if !ok || msg.Info.IsFromMe || msg.Info.IsGroup || msg.Message == nil {
+	switch v := evt.(type) {
+	case *events.Message:
+		handleMessage(v)
+	case *events.ConnectFailure:
+		onConnectFailure(v)
+	}
+}
+
+// onConnectFailure logs WhatsApp connection rejections. Reason 405 means WhatsApp
+// has deprecated this client's embedded WhatsApp-Web version (the usual cause of
+// "scan QR → phone instantly says check your connection"); the only fix is to
+// update whatsmeow and rebuild.
+func onConnectFailure(v *events.ConnectFailure) {
+	if v.Reason == events.ConnectFailureClientOutdated {
+		log.Println("==================================================================")
+		log.Println("[BRIDGE] WhatsApp rejected this client as OUTDATED (error 405).")
+		log.Println("[BRIDGE] The embedded whatsmeow version is too old for WhatsApp.")
+		log.Println("[BRIDGE] Fix: in whatsmeow-bridge/ run:")
+		log.Println("[BRIDGE]   go get -u go.mau.fi/whatsmeow@latest && go mod tidy")
+		log.Println("[BRIDGE]   go build -o ..\\whatsmeow-bridge.exe .")
+		log.Println("[BRIDGE] then delete whatsmeow.db* and re-pair.")
+		log.Println("==================================================================")
+		return
+	}
+	log.Printf("[BRIDGE] WhatsApp connect failure: reason=%d message=%q", v.Reason, v.Message)
+}
+
+// handleMessage forwards an inbound private text message to the callback URL.
+func handleMessage(msg *events.Message) {
+	if msg.Info.IsFromMe || msg.Info.IsGroup || msg.Message == nil {
 		return
 	}
 
