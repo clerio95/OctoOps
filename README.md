@@ -95,6 +95,15 @@ more by dropping a folder into `$OCTOOPS_HOME/modules/` and restarting — no re
 The Whatsmeow bridge binary is fetched by `setup` from `OCTOOPS_BRIDGE_URL` (or
 placed manually); a missing bridge only disables WhatsApp, nothing else.
 
+If WhatsApp later deprecates the bridge's embedded client version (a connect
+failure with error 405), OctoOps **self-heals**: the bridge flags it in
+`/health`, OctoOps alerts the Telegram admin, then stops the bridge, rebuilds it
+from the `whatsmeow-bridge/` source with the Go toolchain (`go get -u
+whatsmeow@latest && go mod tidy && go build`), and respawns it — no re-pairing,
+since the session lives in `whatsmeow.db`. This needs Go installed on the host; a
+6-hour cooldown prevents rebuild loops, and a missing Go toolchain or source
+falls back to a Telegram alert with the manual rebuild steps.
+
 ## Build status
 
 Core framework (complete, reviewed):
@@ -107,7 +116,8 @@ Core framework (complete, reviewed):
   is disabled and reported in `/status`, never fatal to the bot.
 - **Transports:** Telegram (python-telegram-bot, supervised lifecycle; routes
   follow-up replies to open conversations), WhatsApp (supervised bridge sidecar;
-  output + optional keyword-routed inbound, stale-bridge reaping, unpaired-session admin notice), response router.
+  output + optional keyword-routed inbound, stale-bridge reaping, unpaired-session
+  admin notice, auto-rebuild of the bridge on a 405-outdated rejection), response router.
 - **Wizard:** Textual setup TUI — EN / pt-BR language picker (persisted to
   `[core] language`), dynamic per-module config from each module's `ConfigField`
   declarations, guided Telegram onboarding (token verify + chat-ID auto-detect),
