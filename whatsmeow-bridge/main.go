@@ -89,7 +89,14 @@ func main() {
 	}
 
 	dbLog := waLog.Stdout("Database", "ERROR", true)
-	container, err := sqlstore.New(context.Background(), "sqlite", fmt.Sprintf("file:%s?_pragma=foreign_keys(1)", *dbPath), dbLog)
+	// whatsmeow issues many concurrent writes during history sync (signal-store
+	// migration, prekeys, identities). Without busy_timeout a second writer hits
+	// SQLITE_BUSY immediately and the write is lost — which corrupts session/identity
+	// state and makes inbound messages fail to decrypt. busy_timeout makes writers
+	// wait; WAL lets reads proceed alongside a writer. Both are per-connection and
+	// applied to every pooled connection via the DSN.
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)", *dbPath)
+	container, err := sqlstore.New(context.Background(), "sqlite", dsn, dbLog)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
