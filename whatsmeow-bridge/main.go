@@ -24,6 +24,16 @@
 //   "Authorization: Bearer <token>" and the outbound callback presents it.
 //   OctoOps mints this per process and passes it when spawning the bridge.
 //   Empty (e.g. interactive pairing) = unauthenticated, loopback only.
+//
+// Diagnostics / overrides (env vars):
+//   WA_VERSION          — force the WhatsApp-Web client version (e.g.
+//                         "2.3000.1041485407"). Escape hatch for a 405/"couldn't
+//                         link device" when whatsmeow's embedded version lags the
+//                         server requirement. Normally leave unset and rebuild
+//                         against the latest whatsmeow instead.
+//   BRIDGE_DEBUG_EVENTS — when set (any value), raises the whatsmeow Client log to
+//                         DEBUG and logs every unrecognised event type. Use for a
+//                         single pairing-failure diagnosis; leave unset for 24/7.
 package main
 
 import (
@@ -47,6 +57,7 @@ import (
 	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -69,6 +80,9 @@ var (
 	// Set when WhatsApp rejects this client as outdated (error 405). Surfaced in
 	// /health so OctoOps can auto-rebuild the bridge instead of failing silently.
 	clientOutdated atomic.Bool
+	// When true (BRIDGE_DEBUG_EVENTS set) the whatsmeow Client logger runs at DEBUG
+	// and every unrecognised event type is logged — for diagnosing pairing failures.
+	debugEvents bool
 )
 
 // authOK reports whether a request may proceed: true when no token is configured,
@@ -91,6 +105,7 @@ func main() {
 	if bridgeToken == "" {
 		log.Println("warning: BRIDGE_TOKEN not set — HTTP API is unauthenticated")
 	}
+	debugEvents = os.Getenv("BRIDGE_DEBUG_EVENTS") != ""
 
 	dbLog := waLog.Stdout("Database", "ERROR", true)
 	// whatsmeow issues many concurrent writes during history sync (signal-store
@@ -120,9 +135,15 @@ func main() {
 		log.Fatalf("get device: %v", err)
 	}
 
-	clientLog := waLog.Stdout("Client", "INFO", true)
+	clientLevel := "INFO"
+	if debugEvents {
+		// Full whatsmeow handshake/stream detail for a one-off pairing diagnosis.
+		clientLevel = "DEBUG"
+	}
+	clientLog := waLog.Stdout("Client", clientLevel, true)
 	waClient = whatsmeow.NewClient(deviceStore, clientLog)
 	waClient.AddEventHandler(onEvent)
+	applyWAVersion()
 
 	// Start the HTTP server before connecting to WhatsApp so OctoOps health
 	// polls succeed immediately while QR scanning is in progress.
@@ -175,8 +196,23 @@ func connectWA() {
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 			case "success":
 				fmt.Println("Paired successfully.")
+			case "timeout":
+				log.Println("[BRIDGE] QR pairing timed out — no scan within the window. Restart the bridge to get a fresh QR.")
+			case "err-client-outdated":
+				// THE pair-time outdated signal — never reaches ConnectFailure on a
+				// fresh login, so this is what the phone's "couldn't link device,
+				// check your connection" actually means.
+				clientOutdated.Store(true)
+				log.Println("==================================================================")
+				log.Println("[BRIDGE] QR pairing rejected: CLIENT OUTDATED (405).")
+				log.Println("[BRIDGE] WhatsApp deprecated this whatsmeow version at pair time.")
+				log.Println("[BRIDGE] Fix: rebuild against the latest whatsmeow, or set")
+				log.Println("[BRIDGE] WA_VERSION to a current WhatsApp-Web version and retry.")
+				log.Println("==================================================================")
 			default:
-				log.Printf("qr event: %s", evt.Event)
+				// "error", "err-unexpected-state", etc. — a problem the phone may
+				// show as "couldn't link device". Surface it instead of swallowing.
+				log.Printf("[BRIDGE] QR event %q (error=%v) — pairing did not complete.", evt.Event, evt.Error)
 			}
 		}
 	} else {
@@ -195,7 +231,62 @@ func onEvent(evt interface{}) {
 		handleMessage(v)
 	case *events.ConnectFailure:
 		onConnectFailure(v)
+	case *events.StreamError:
+		// A stream:error during the QR handshake is how WhatsApp rejects a *pair*
+		// attempt — it never reaches ConnectFailure on a fresh (sessionless) login,
+		// so the only sign was previously the phone's "couldn't link device". An
+		// outdated client surfaces here as code "405".
+		if v.Code == "405" {
+			clientOutdated.Store(true)
+		}
+		log.Printf("[BRIDGE] stream error: code=%q", v.Code)
+	case *events.PairSuccess:
+		log.Printf("[BRIDGE] pair success: id=%s platform=%q business=%q", v.ID, v.Platform, v.BusinessName)
+	case *events.PairError:
+		// Pairing was rejected after the QR scan (the phone shows "couldn't link
+		// device, check your connection and try again"). Log the real reason.
+		log.Printf("[BRIDGE] PAIR ERROR: id=%s error=%v", v.ID, v.Error)
+	case *events.ClientOutdated:
+		clientOutdated.Store(true)
+		log.Println("[BRIDGE] client outdated — WhatsApp deprecated this whatsmeow version; rebuild against the latest whatsmeow (or set WA_VERSION).")
+	case *events.QRScannedWithoutMultidevice:
+		log.Println("[BRIDGE] QR scanned but multi-device is not enabled on the phone — open WhatsApp → Linked Devices and try again.")
+	case *events.TemporaryBan:
+		log.Printf("[BRIDGE] TEMPORARY BAN: code=%v expires_in=%s", v.Code, v.Expire)
+	case *events.LoggedOut:
+		log.Printf("[BRIDGE] logged out: on_connect=%v reason=%s", v.OnConnect, v.Reason)
+	case *events.StreamReplaced:
+		log.Println("[BRIDGE] stream replaced — another client took over this session.")
+	case *events.Connected:
+		log.Println("[BRIDGE] connected to WhatsApp.")
+	case *events.Disconnected:
+		log.Println("[BRIDGE] disconnected from WhatsApp.")
+	case *events.CATRefreshError:
+		log.Printf("[BRIDGE] CAT refresh error: %v", v.Error)
+	default:
+		if debugEvents {
+			log.Printf("[BRIDGE] event: %T", v)
+		}
 	}
+}
+
+// applyWAVersion logs the WhatsApp-Web protocol version this client presents and
+// lets an operator force it via WA_VERSION (e.g. "2.3000.1041485407"). WhatsApp
+// rejects clients whose version it has deprecated (error 405 at connect, or a
+// silent "couldn't link device" on the phone at pair time); normally the fix is to
+// rebuild against the latest whatsmeow, but the override is an escape hatch for
+// when whatsmeow's embedded version still lags the server requirement.
+func applyWAVersion() {
+	if v := os.Getenv("WA_VERSION"); v != "" {
+		parsed, err := store.ParseVersion(v)
+		if err != nil {
+			log.Printf("[BRIDGE] ignoring invalid WA_VERSION %q: %v", v, err)
+		} else {
+			store.SetWAVersion(parsed)
+			log.Printf("[BRIDGE] WA_VERSION override applied: %s", parsed)
+		}
+	}
+	log.Printf("[BRIDGE] WhatsApp-Web client version: %s", store.GetWAVersion())
 }
 
 // onConnectFailure logs WhatsApp connection rejections. Reason 405 means WhatsApp
