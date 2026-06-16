@@ -112,7 +112,10 @@ class WhatsAppTransport(Transport):
         self._admin_chat_ids: list[str] = list(admin_chat_ids or [])
         # Inbound (brain-only) routing — off unless enabled and a router is set.
         self._inbound_enabled = inbound_enabled
+        # Live allowlist (config numbers + LIDs resolved/cached at runtime). The
+        # original config entries are kept separately as the set to resolve to LIDs.
         self._allow = {normalize_number(x) for x in (allow or [])}
+        self._configured_allow = frozenset(self._allow)
         self._command = command
         self._role = role
         self._router: "Router | None" = None
@@ -285,6 +288,10 @@ class WhatsAppTransport(Transport):
                 reason="not_allowed",
                 sender=normalize_number(sender),
                 kind=kind,
+                # Empty sender_pn means the bridge could not resolve the LID to a
+                # phone number, so a phone-number allowlist can NEVER match this
+                # sender — allowlist the LID shown in `sender` instead.
+                sender_pn=normalize_number(sender_pn or "") or "unresolved",
             )
             return web.json_response(self._NOT_ROUTED)
 
@@ -369,6 +376,7 @@ class WhatsAppTransport(Transport):
                 await self._register_callback()
                 if await self._wait_logged_in(proc):
                     await self._refresh_groups()
+                    await self._resolve_allow_lids()
                     await self._notify_admins()
                 backoff = 1
             await proc.wait()
@@ -684,6 +692,77 @@ class WhatsAppTransport(Transport):
                 _log.info("whatsapp.groups_saved", path=str(path))
         except Exception as exc:  # noqa: BLE001 - discovery must never crash the supervisor
             _log.warning("whatsapp.groups_refresh_failed", error=str(exc))
+
+    def _lid_cache_path(self) -> Path | None:
+        reg = self._registry
+        if reg is None or reg.paths is None:
+            return None
+        return reg.paths.data / "whatsapp_lids.json"
+
+    def _load_lid_cache(self) -> dict[str, str]:
+        """Last-known phone→LID mappings ({number: lid}); empty on missing/corrupt."""
+        path = self._lid_cache_path()
+        if path is None:
+            return {}
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+    def _save_lid_cache(self, mapping: dict[str, str]) -> None:
+        path = self._lid_cache_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            _log.info("whatsapp.lids_saved", path=str(path), count=len(mapping))
+        except OSError as exc:  # noqa: BLE001 - caching is best-effort
+            _log.warning("whatsapp.lids_save_failed", error=str(exc))
+
+    async def _resolve_allow_lids(self) -> None:
+        """Turn allowlisted phone numbers into the LIDs WhatsApp actually addresses.
+
+        WhatsApp delivers many inbound messages under an opaque LID rather than the
+        sender's phone number, so a phone-number allowlist never matches and modules
+        stay unreachable. Right after pairing we ask the bridge to resolve each
+        configured number to its LID (a live usync query that needs no prior contact)
+        and add the LID to the in-memory allowlist — so an operator allowlists plain
+        phone numbers and inbound just works, with no hand-copying a LID from logs.
+
+        Best-effort and non-fatal: a cached mapping (data/whatsapp_lids.json) is
+        seeded first so known LIDs keep working even if this refresh fails, and any
+        error is logged without crashing the supervisor.
+        """
+        if not self._inbound_enabled or not self._configured_allow:
+            return
+        cache = self._load_lid_cache()
+        # Seed from cache so a transient resolve failure doesn't lose known LIDs.
+        for lid in cache.values():
+            normalized = normalize_number(lid)
+            if normalized:
+                self._allow.add(normalized)
+        for number in sorted(self._configured_allow):
+            try:
+                data = await self._client.resolve_lid(number)
+            except Exception as exc:  # noqa: BLE001 - never crash the supervisor
+                _log.warning("whatsapp.lid_resolve_failed", number=number, error=str(exc))
+                continue
+            if not data.get("ok"):
+                _log.info("whatsapp.lid_unresolved", number=number)
+                continue
+            lid = normalize_number(data.get("lid") or "")
+            if not lid:
+                continue
+            cache[number] = lid
+            if lid not in self._allow:
+                self._allow.add(lid)
+                _log.info("whatsapp.lid_resolved", number=number, lid=lid)
+        if cache:
+            self._save_lid_cache(cache)
 
     def _whatsapp_access_text(self, lang: str) -> str:
         """A startup-message line stating what's reachable over WhatsApp inbound.

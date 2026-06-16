@@ -2,6 +2,7 @@
 //
 // Exposes a local HTTP API that OctoOps drives:
 //   GET  /health              → {"ok":true,"logged_in":<bool>,"outdated":<bool>}
+//   GET  /resolve-lid?pn=<n>  → {"ok":true,"pn":"<pn-jid>","lid":"<lid-jid>"}
 //   POST /send                ← {"chat_id":"<jid>","text":"<msg>"}
 //   POST /register-callback   ← {"url":"http://127.0.0.1:<port>/incoming"}
 //   POST /shutdown
@@ -150,6 +151,7 @@ func main() {
 	addr := fmt.Sprintf("127.0.0.1:%d", *port)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/resolve-lid", handleResolveLID)
 	mux.HandleFunc("/send", handleSend)
 	mux.HandleFunc("/groups", handleGroups)
 	mux.HandleFunc("/register-callback", handleRegisterCallback)
@@ -417,6 +419,63 @@ func handleGroups(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "groups": result})
+}
+
+// handleResolveLID maps a phone number to the opaque LID WhatsApp uses to address
+// that contact in inbound messages. WhatsApp increasingly delivers messages under
+// a LID instead of the phone number, so a phone-number allowlist never matches; by
+// resolving the LID once (right after pairing) OctoOps can allow it automatically
+// instead of making the operator hand-copy it from a dropped-message log.
+//
+// IsOnWhatsApp runs a live usync query (works without prior contact) which both
+// confirms the number is on WhatsApp and populates the PN↔LID mapping store, so the
+// subsequent GetLIDForPN returns the LID. "lid" is "" when WhatsApp doesn't expose
+// one for this contact (the caller then keeps using the phone number).
+func handleResolveLID(w http.ResponseWriter, r *http.Request) {
+	if !authOK(r) {
+		writeJSON(w, http.StatusUnauthorized, errResp("unauthorized"))
+		return
+	}
+	if !waClient.IsConnected() || waClient.Store.ID == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errResp("not logged in"))
+		return
+	}
+	pn := strings.TrimSpace(r.URL.Query().Get("pn"))
+	if pn == "" {
+		writeJSON(w, http.StatusBadRequest, errResp("missing pn"))
+		return
+	}
+	// IsOnWhatsApp wants a dialable phone string; strip any JID server and ensure a
+	// leading '+'. A non-phone input (e.g. someone passing a raw LID) simply comes
+	// back IsIn=false, which the caller treats as "nothing to resolve".
+	query := pn
+	if at := strings.IndexRune(query, '@'); at >= 0 {
+		query = query[:at]
+	}
+	if !strings.HasPrefix(query, "+") {
+		query = "+" + query
+	}
+	ctx := context.Background()
+	resp, err := waClient.IsOnWhatsApp(ctx, []string{query})
+	if err != nil || len(resp) == 0 {
+		log.Printf("resolve-lid: IsOnWhatsApp %q: %v", query, err)
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": false, "error": "lookup failed"})
+		return
+	}
+	entry := resp[0]
+	if !entry.IsIn {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": false, "error": "not on whatsapp"})
+		return
+	}
+	lidStr := ""
+	if lid, lerr := waClient.Store.LIDs.GetLIDForPN(ctx, entry.JID); lerr == nil && lid.User != "" {
+		lidStr = lid.String()
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":  true,
+		"pn":  entry.JID.String(),
+		"lid": lidStr,
+	})
 }
 
 func handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -131,6 +131,104 @@ async def test_refresh_groups_skips_when_not_logged_in(tmp_path):
     assert not (tmp_path / "whatsapp_groups.json").exists()
 
 
+# --- phone -> LID auto-resolution ------------------------------------------------
+
+
+class _ResolveClient:
+    """Fake bridge client driving _resolve_allow_lids: {number: lid_jid|None}."""
+
+    def __init__(self, mapping=None, fail=None):
+        self._mapping = mapping or {}
+        self._fail = set(fail or ())
+        self.calls = []
+
+    async def resolve_lid(self, pn):
+        self.calls.append(pn)
+        if pn in self._fail:
+            raise RuntimeError("bridge boom")
+        if pn not in self._mapping:
+            return {"ok": False, "error": "not on whatsapp"}
+        return {"ok": True, "pn": f"{pn}@s.whatsapp.net", "lid": self._mapping[pn] or ""}
+
+    async def close(self):
+        pass
+
+
+def _resolve_transport(client, *, allow, tmp_path, inbound=True):
+    from types import SimpleNamespace
+
+    transport = WhatsAppTransport(
+        bridge_path="/nonexistent", bridge_port=0, callback_port=0,
+        client=client, spawn=False, inbound_enabled=inbound, allow=allow,
+    )
+    transport._registry = SimpleNamespace(paths=SimpleNamespace(data=tmp_path))
+    return transport
+
+
+@pytest.mark.asyncio
+async def test_resolve_allow_lids_adds_and_caches(tmp_path):
+    client = _ResolveClient({"5527981650032": "142013227876439@lid"})
+    transport = _resolve_transport(client, allow=["5527981650032"], tmp_path=tmp_path)
+
+    await transport._resolve_allow_lids()
+
+    assert "142013227876439" in transport._allow  # the LID is now allowed
+    assert "5527981650032" in transport._allow  # original phone number kept
+    cache = json.loads((tmp_path / "whatsapp_lids.json").read_text())
+    assert cache == {"5527981650032": "142013227876439"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_allow_lids_skips_unresolved(tmp_path):
+    client = _ResolveClient({})  # number not on WhatsApp / no LID
+    transport = _resolve_transport(client, allow=["5511999998888"], tmp_path=tmp_path)
+
+    await transport._resolve_allow_lids()
+
+    assert transport._allow == {"5511999998888"}  # unchanged
+    assert not (tmp_path / "whatsapp_lids.json").exists()  # nothing cached
+
+
+@pytest.mark.asyncio
+async def test_resolve_allow_lids_survives_client_error(tmp_path):
+    client = _ResolveClient(
+        {"5527981650032": "142013227876439@lid"}, fail={"5511111111111"}
+    )
+    transport = _resolve_transport(
+        client, allow=["5511111111111", "5527981650032"], tmp_path=tmp_path
+    )
+
+    await transport._resolve_allow_lids()  # must not raise
+
+    assert "142013227876439" in transport._allow  # the healthy lookup still applied
+
+
+@pytest.mark.asyncio
+async def test_resolve_allow_lids_seeds_from_cache(tmp_path):
+    (tmp_path / "whatsapp_lids.json").write_text(
+        json.dumps({"5527981650032": "142013227876439"})
+    )
+    client = _ResolveClient({}, fail={"5527981650032"})  # live resolve fails
+    transport = _resolve_transport(client, allow=["5527981650032"], tmp_path=tmp_path)
+
+    await transport._resolve_allow_lids()
+
+    assert "142013227876439" in transport._allow  # served from cache despite failure
+
+
+@pytest.mark.asyncio
+async def test_resolve_allow_lids_noop_when_inbound_off(tmp_path):
+    client = _ResolveClient({"5527981650032": "142013227876439@lid"})
+    transport = _resolve_transport(
+        client, allow=["5527981650032"], tmp_path=tmp_path, inbound=False
+    )
+
+    await transport._resolve_allow_lids()
+
+    assert client.calls == []  # never queried the bridge
+    assert "142013227876439" not in transport._allow
+
+
 @pytest.mark.asyncio
 async def test_bridge_client_roundtrip(mock_bridge):
     base_url, calls = mock_bridge

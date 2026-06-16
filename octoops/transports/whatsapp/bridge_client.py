@@ -1,7 +1,8 @@
 """aiohttp client for the Whatsmeow Go bridge's local HTTP REST API.
 
-Endpoints (bridge side): POST /send, GET /health, POST /register-callback,
-POST /shutdown. The session is created lazily and reused.
+Endpoints (bridge side): POST /send, GET /health, GET /groups,
+GET /resolve-lid, POST /register-callback, POST /shutdown. The session is created
+lazily and reused.
 
 Even though the bridge binds loopback, its API is unauthenticated by default,
 which lets any local process send WhatsApp messages or redirect inbound traffic.
@@ -107,6 +108,23 @@ class BridgeClient:
             resp.raise_for_status()
             data = await resp.json(content_type=None)
             return data.get("groups", [])
+
+    async def resolve_lid(self, pn: str) -> dict[str, Any]:
+        """Resolve a phone number to its WhatsApp LID.
+
+        Returns {"ok": True, "pn": "<pn-jid>", "lid": "<lid-jid>"} on success (lid
+        may be "" when WhatsApp exposes none), or {"ok": False, ...} when the number
+        isn't on WhatsApp / the lookup fails. Raises only on transport/auth/HTTP
+        errors (the bridge returns 200 with ok=False for the soft cases).
+        """
+        session = await self._session_get()
+        async with session.get(
+            f"{self._base}/resolve-lid",
+            params={"pn": pn},
+            headers=self._headers(),
+        ) as resp:
+            resp.raise_for_status()
+            return await resp.json(content_type=None)
 
     async def register_callback(self, url: str) -> dict[str, Any]:
         session = await self._session_get()

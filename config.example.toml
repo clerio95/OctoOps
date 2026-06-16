@@ -28,8 +28,13 @@ whatsapp_admin_chat_ids = []             # e.g. ["5511999998888"]
 # itself, so a WhatsApp user can't invoke arbitrary commands.
 whatsapp_inbound_enabled = false
 whatsapp_allow = []                  # allowed phone numbers, e.g. ["5511999998888"]
-                                     # (the bridge resolves WhatsApp's @lid back to
-                                     #  the phone number, so list phone numbers here)
+                                     # List PHONE NUMBERS here. WhatsApp often
+                                     # addresses inbound senders by an opaque @lid
+                                     # instead of their number; after pairing OctoOps
+                                     # resolves each number to its LID and allows it
+                                     # automatically (cached in data/whatsapp_lids.json),
+                                     # so the menu works right away. A raw LID also
+                                     # works if you ever need to add one by hand.
 whatsapp_command = "ask"             # default command for non-keyword messages
 whatsapp_role = "operator"           # role inbound WhatsApp users are treated as
 
