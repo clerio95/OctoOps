@@ -23,7 +23,7 @@ from octoops.core.conversations import conversation_key
 from octoops.core.errors import TransportError
 from octoops.core.logging import get_logger
 from octoops.core.response_router import route_response
-from octoops.modules.status import build_status_text
+from octoops.modules.status import build_startup_text
 from octoops.shared.models import Request, Response, TransportSource
 from octoops.transports import Transport
 
@@ -225,9 +225,8 @@ class TelegramTransport(Transport):
 
     def _startup_text(self) -> str:
         if self._registry is None:
-            return "🐙 OctoOps started."
-        body = build_status_text(self._registry)
-        return body.replace("🐙 *OctoOps status*", "🐙 *OctoOps started*", 1)
+            return "🐙 OctoOps online."
+        return build_startup_text(self._registry)
 
     async def _notify_admin(self, text: str) -> None:
         if not self._admin_chat_id or self._app is None:

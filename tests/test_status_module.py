@@ -3,7 +3,7 @@
 import pytest
 
 from octoops.core.bootstrap import build_runtime
-from octoops.modules.status import build_status_text
+from octoops.modules.status import build_startup_text, build_status_text
 from octoops.shared.models import Request, TransportSource
 
 
@@ -26,6 +26,15 @@ async def test_build_status_text_no_role(app_config):
     assert "Uptime:" in text
     assert "Modules" in text
     assert "Your role" not in text  # caller-role line is NOT in the shared helper
+
+
+@pytest.mark.asyncio
+async def test_build_startup_text_is_slim_and_capitalized(app_config):
+    runtime = build_runtime(app_config)
+    text = build_startup_text(runtime.registry)
+    assert "OctoOps online" in text
+    assert "Uptime:" not in text          # the online message drops uptime
+    assert "Status" in text and "status" not in text  # module names capitalized
 
 
 @pytest.mark.asyncio

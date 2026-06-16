@@ -35,7 +35,6 @@ from aiohttp import web
 from octoops.core.conversations import conversation_key
 from octoops.core.logging import get_logger
 from octoops.core.secure_io import write_private_text
-from octoops.modules.status import build_status_text
 from octoops.shared.models import Request, Response, Role, TransportSource
 from octoops.transports import Transport
 
@@ -82,6 +81,17 @@ def _extract(body: Any, keys: Iterable[str]) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _online_message(lang: str) -> str:
+    """The slim 'bot online' WhatsApp notification: title + a pointer to /help.
+
+    The command list itself lives behind /help (and /ajuda), which over WhatsApp
+    shows only the commands actually reachable there.
+    """
+    if (lang or "").strip().lower().startswith("pt"):
+        return "OctoOps Online\n/ajuda ou /help para ver os comandos disponíveis"
+    return "OctoOps Online\n/help to see the commands you can use"
 
 
 class WhatsAppTransport(Transport):
@@ -764,73 +774,11 @@ class WhatsAppTransport(Transport):
         if cache:
             self._save_lid_cache(cache)
 
-    def _whatsapp_access_text(self, lang: str) -> str:
-        """A startup-message line stating what's reachable over WhatsApp inbound.
-
-        WhatsApp inbound is a single forced command, so this resolves that one
-        command to its owning module. If inbound is off it says output-only; if
-        the configured command isn't actually registered (the classic
-        whatsapp_command / core.language mismatch) it warns, so the operator
-        catches the misconfiguration from the startup message itself.
-        """
-        pt = lang.strip().lower().startswith("pt")
-        if not self._inbound_enabled:
-            return (
-                "📵 WhatsApp: somente saída (sem comandos de entrada)."
-                if pt
-                else "📵 WhatsApp: output-only (no inbound commands)."
-            )
-        cmd = self._command.lstrip("/").lower()
-        module = None
-        keywords: set[str] = set()
-        if self._router is not None:
-            for name, cmd_def, owning_module in self._router.entries():
-                if name == cmd:
-                    module = owning_module
-                for keyword in getattr(cmd_def, "whatsapp_keywords", ()) or ():
-                    keywords.add(keyword.lstrip("/").lower())
-        keyword_list = ", ".join(sorted(keywords))
-        if module is None:
-            if keywords:
-                # No default command, but keyword-routed modules are reachable.
-                return (
-                    f"💬 WhatsApp: comandos por palavra-chave: {keyword_list}."
-                    if pt
-                    else f"💬 WhatsApp: keyword commands: {keyword_list}."
-                )
-            return (
-                f"⚠ WhatsApp: o comando de entrada /{cmd} está ativado mas não foi "
-                "registrado — verifique [transport] whatsapp_command e [core] language."
-                if pt
-                else f"⚠ WhatsApp: inbound command /{cmd} is enabled but not "
-                "registered — check [transport] whatsapp_command and [core] language."
-            )
-        line = (
-            f"💬 WhatsApp: envie uma mensagem para usar /{cmd} ({module})."
-            if pt
-            else f"💬 WhatsApp: send a message to use /{cmd} ({module})."
-        )
-        if keywords:
-            line += (
-                f" Palavras-chave: {keyword_list}."
-                if pt
-                else f" Keywords: {keyword_list}."
-            )
-        return line
-
     async def _notify_admins(self) -> None:
         if not self._admin_chat_ids:
             return
-        reg = self._registry
-        if reg is not None:
-            md = build_status_text(reg)
-            # Strip markdown bold markers — WhatsApp uses its own formatting.
-            text = md.replace("*OctoOps status*", "OctoOps started").replace("*", "")
-            # Tell admins what's actually usable over WhatsApp (inbound is limited
-            # to one forced command), localized to the configured language.
-            text += "\n" + self._whatsapp_access_text(reg.config.core.language)
-        else:
-            text = "OctoOps started."
+        lang = self._registry.config.core.language if self._registry is not None else "en"
+        text = _online_message(lang)
         try:
             await self.send(
                 Response(

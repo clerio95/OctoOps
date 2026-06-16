@@ -134,6 +134,27 @@ async def test_header_localizes_to_portuguese():
     assert "comandos que você pode usar" in text
 
 
+def _wa_req(user_id: str) -> Request:
+    return Request(
+        command="help",
+        args=[],
+        raw_text="ajuda",
+        user_id=user_id,
+        chat_id="c1",
+        source=TransportSource.WhatsApp,
+    )
+
+
+async def test_whatsapp_lists_only_reachable_commands():
+    # TransportConfig() defaults: whatsapp_command="ask", whatsapp_role=Operator.
+    registry, help_ctx = _setup("en")
+    text = (await handle_help(_wa_req("100"), help_ctx)).text
+    assert "/ask" in text  # the forced default command
+    assert "/help" in text and "/ajuda" in text  # keyword-routable over WhatsApp
+    assert "/status" not in text  # registered but not reachable over WhatsApp
+    assert "/grant" not in text  # Admin, and not WhatsApp-reachable
+
+
 async def test_unknown_user_role_none_shows_all():
     # A synthetic/privileged caller not in any role list -> show everything.
     registry, help_ctx = _setup("en")

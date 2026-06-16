@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from octoops.core.contracts import CommandDef, ModuleRegistration
 from octoops.core.registry import ModuleContext
-from octoops.shared.models import Request, Response, Role
+from octoops.shared.models import Request, Response, Role, TransportSource
 
 from .i18n import tr
 
@@ -33,22 +33,33 @@ def load(ctx: ModuleContext) -> ModuleRegistration:
     return ModuleRegistration(
         name=tr(lang, "display"),
         commands=[
-            CommandDef("help", desc, Role.Viewer, handle_help),
-            CommandDef("ajuda", desc, Role.Viewer, handle_help),
+            CommandDef("help", desc, Role.Viewer, handle_help, whatsapp_keywords=["help"]),
+            CommandDef(
+                "ajuda", desc, Role.Viewer, handle_help, whatsapp_keywords=["ajuda"]
+            ),
         ],
     )
 
 
-def _visible_commands(router, role: Role | None):
+def _visible_commands(router, role: Role | None, *, whatsapp_only=False, default_command=""):
     """(module, command_name, description) for commands the role may run.
 
     A None role (synthetic/privileged caller, e.g. MCP) is shown everything.
     Duplicate descriptions for alias commands are kept — each real command lists.
+
+    With ``whatsapp_only`` set, the list is further narrowed to what a WhatsApp
+    user can actually reach: commands that declare a whatsapp_keyword, plus the
+    one forced default command (``default_command``).
     """
     items: list[tuple[str, str, str]] = []
     for name, cmd, module in router.entries():
-        if role is None or cmd.min_role <= role:
-            items.append((module, name, cmd.description))
+        if role is not None and not (cmd.min_role <= role):
+            continue
+        if whatsapp_only and not (
+            getattr(cmd, "whatsapp_keywords", None) or name == default_command
+        ):
+            continue
+        items.append((module, name, cmd.description))
     items.sort(key=lambda t: (t[0].lower(), t[1].lower()))
     return items
 
@@ -75,6 +86,18 @@ async def handle_help(request: Request, ctx: ModuleContext) -> Response:
     router = ctx.registry.router
     if router is None:  # defensive: router is wired in bootstrap
         return Response(text=tr(lang, "none"), chat_id=request.chat_id)
-    role = ctx.registry.permissions.role_for(request.user_id)
-    text = _render(lang, _visible_commands(router, role))
+    if request.source == TransportSource.WhatsApp:
+        # WhatsApp inbound is limited to keyword commands and the one forced
+        # default command, evaluated at the configured WhatsApp role — so show
+        # only those, not the full Telegram command set.
+        transport = ctx.registry.config.transport
+        role = transport.whatsapp_role
+        default_command = (transport.whatsapp_command or "").lstrip("/").lower()
+        items = _visible_commands(
+            router, role, whatsapp_only=True, default_command=default_command
+        )
+    else:
+        role = ctx.registry.permissions.role_for(request.user_id)
+        items = _visible_commands(router, role)
+    text = _render(lang, items)
     return Response(text=text, chat_id=request.chat_id)

@@ -47,6 +47,28 @@ def build_status_text(registry) -> str:
     return text
 
 
+def _cap(name: str) -> str:
+    """Capitalize the first letter only (leave the rest as authored)."""
+    return name[:1].upper() + name[1:] if name else name
+
+
+def build_startup_text(registry) -> str:
+    """Slim 'online' notification sent when the bot comes up.
+
+    Unlike build_status_text (the /status command, which keeps uptime and the
+    caller's role), this drops the uptime line and capitalizes each module name —
+    it's a clean "we're online + what's loaded" line for admins.
+    """
+    modules = registry.module_names
+    modules_line = (
+        ", ".join(_cap(m) for m in sorted(modules, key=str.lower)) if modules else "(none)"
+    )
+    text = "🐙 *OctoOps online*\n" f"Modules ({len(modules)}): {modules_line}"
+    for error in getattr(registry, "module_errors", []) or []:
+        text += f"\n⚠ disabled: {error}"
+    return text
+
+
 async def handle_status(request: Request, ctx: ModuleContext) -> Response:
     registry = ctx.registry
     role = registry.permissions.role_for(request.user_id)
