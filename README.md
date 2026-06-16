@@ -13,9 +13,22 @@ drop-in modules under `octoops/modules/`; the core is small and domain-neutral.
 OctoOps is managed with [uv](https://docs.astral.sh/uv/) — it provisions Python
 and all dependencies from the lockfile, so no system Python is required.
 
+**Windows, from a clean machine** — one PowerShell line installs Git (via winget),
+clones the repo, runs setup, and launches the wizard:
+
+```powershell
+irm https://raw.githubusercontent.com/clerio95/OctoOps/main/bootstrap.ps1 | iex
+```
+
+`bootstrap.ps1` is idempotent: re-running it `git pull`s an existing checkout and
+re-runs setup. Pass switches when you have the file locally, e.g.
+`./bootstrap.ps1 -Dir C:\apps\OctoOps -NoConfigure` (skip the wizard).
+
+**Already have the repo** — run setup directly:
+
 ```bash
 ./setup.sh        # Linux/macOS   (installs uv, uv sync, fetch bridge, --check)
-./setup.ps1       # Windows (PowerShell)
+./setup.ps1       # Windows (PowerShell) — installs uv + Go, syncs, builds the bridge, --check
 ```
 
 Then:
