@@ -229,6 +229,36 @@ async def test_resolve_allow_lids_noop_when_inbound_off(tmp_path):
     assert "142013227876439" not in transport._allow
 
 
+def test_learn_inbound_lid_binds_allowlisted_phone(tmp_path):
+    # Allowlisted by phone; a message arrives under an unseen LID + the phone.
+    transport = _resolve_transport(None, allow=["5527981650032"], tmp_path=tmp_path)
+
+    transport._learn_inbound_lid("142013227876439@lid", "5527981650032@s.whatsapp.net")
+
+    assert "142013227876439" in transport._allow  # LID now allowed
+    cache = json.loads((tmp_path / "whatsapp_lids.json").read_text())
+    assert cache == {"5527981650032": "142013227876439"}
+
+
+def test_learn_inbound_lid_ignores_unallowlisted_phone(tmp_path):
+    # A phone we never allowlisted must not be learned (security boundary).
+    transport = _resolve_transport(None, allow=["5527981650032"], tmp_path=tmp_path)
+
+    transport._learn_inbound_lid("999@lid", "5511000000000@s.whatsapp.net")
+
+    assert "999" not in transport._allow
+    assert not (tmp_path / "whatsapp_lids.json").exists()
+
+
+def test_learn_inbound_lid_skips_when_phone_echoes_lid(tmp_path):
+    # Bridge couldn't resolve the PN and echoed the LID -> nothing to learn.
+    transport = _resolve_transport(None, allow=["87188003913891"], tmp_path=tmp_path)
+
+    transport._learn_inbound_lid("87188003913891@lid", "87188003913891")
+
+    assert not (tmp_path / "whatsapp_lids.json").exists()  # no spurious binding
+
+
 @pytest.mark.asyncio
 async def test_bridge_client_roundtrip(mock_bridge):
     base_url, calls = mock_bridge

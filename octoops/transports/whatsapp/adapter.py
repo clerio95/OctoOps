@@ -305,6 +305,12 @@ class WhatsAppTransport(Transport):
             )
             return web.json_response(self._NOT_ROUTED)
 
+        # Self-heal: an allowlisted user may arrive under an opaque LID we haven't
+        # mapped yet. If WhatsApp delivered their phone (sender_pn) alongside it,
+        # learn the binding so future messages match off the allowlist directly,
+        # even if a later message arrives without the phone attached.
+        self._learn_inbound_lid(sender, sender_pn)
+
         # Prefer the phone number as the stable, human-meaningful conversation id.
         user_id = normalize_number(sender_pn) if sender_pn else normalize_number(sender)
         command = self._resolve_inbound_command(user_id, text)
@@ -733,6 +739,30 @@ class WhatsAppTransport(Transport):
         except OSError as exc:  # noqa: BLE001 - caching is best-effort
             _log.warning("whatsapp.lids_save_failed", error=str(exc))
 
+    def _learn_inbound_lid(self, sender: str, sender_pn: str | None) -> None:
+        """Cache a LID↔phone binding discovered from an allowed inbound message.
+
+        When WhatsApp addresses an allowlisted user by an opaque LID but also
+        delivers their phone number (sender_pn), record the LID so later messages
+        match off the allowlist directly — no dependence on the phone being
+        re-attached, or on the startup phone→LID resolve having succeeded. Only
+        learns for phone numbers the operator actually allowlisted; a no-op (no
+        cache I/O) once the LID is known.
+        """
+        if "@lid" not in sender:
+            return  # already addressed by phone number; nothing to learn
+        lid = normalize_number(sender)
+        pn = normalize_number(sender_pn or "")
+        if not lid or not pn or lid == pn:
+            return  # no phone delivered (or it just echoed the LID)
+        if pn not in self._allow or lid in self._allow:
+            return  # only learn for allowlisted phones; skip if already known
+        self._allow.add(lid)
+        cache = self._load_lid_cache()
+        cache[pn] = lid
+        self._save_lid_cache(cache)
+        _log.info("whatsapp.lid_learned", number=pn, lid=lid)
+
     async def _resolve_allow_lids(self) -> None:
         """Turn allowlisted phone numbers into the LIDs WhatsApp actually addresses.
 
@@ -762,10 +792,18 @@ class WhatsAppTransport(Transport):
                 _log.warning("whatsapp.lid_resolve_failed", number=number, error=str(exc))
                 continue
             if not data.get("ok"):
-                _log.info("whatsapp.lid_unresolved", number=number)
+                # IsOnWhatsApp said the number isn't reachable (wrong format / not
+                # on WhatsApp), so there is no LID to add.
+                _log.info(
+                    "whatsapp.lid_unresolved", number=number, reason="not_on_whatsapp"
+                )
                 continue
             lid = normalize_number(data.get("lid") or "")
             if not lid:
+                # The number is on WhatsApp but it isn't exposing a LID to us — a
+                # phone-only allowlist can't match this user until the LID appears
+                # (e.g. learned from an inbound message). Previously silent.
+                _log.info("whatsapp.lid_unresolved", number=number, reason="no_lid_exposed")
                 continue
             cache[number] = lid
             if lid not in self._allow:

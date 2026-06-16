@@ -340,9 +340,16 @@ func handleMessage(msg *events.Message) {
 	// sender_pn is the phone number, so OctoOps can match allowlists that list
 	// phone numbers even when WhatsApp delivers the message under an opaque LID.
 	sender := msg.Info.Sender.String()
+	senderPN := resolvePN(msg.Info)
+	// Diagnostic: how WhatsApp addressed this sender and whether we could recover
+	// their phone number. When addressing=lid and resolved_pn is empty (or equal to
+	// the LID), WhatsApp is not exposing the phone behind the LID, so a phone-number
+	// allowlist can never match — the operator must allowlist the LID shown here.
+	log.Printf("[BRIDGE] inbound: addressing=%v sender=%s sender_alt=%q resolved_pn=%q",
+		msg.Info.AddressingMode, sender, msg.Info.SenderAlt.String(), senderPN)
 	payload, _ := json.Marshal(map[string]string{
 		"sender":    sender,
-		"sender_pn": resolvePN(msg.Info),
+		"sender_pn": senderPN,
 		"text":      text,
 	})
 	go postCallback(url, payload)
@@ -463,14 +470,20 @@ func handleResolveLID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry := resp[0]
+	log.Printf("[BRIDGE] resolve-lid: query=%q is_in=%t jid=%s", query, entry.IsIn, entry.JID.String())
 	if !entry.IsIn {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": false, "error": "not on whatsapp"})
 		return
 	}
 	lidStr := ""
-	if lid, lerr := waClient.Store.LIDs.GetLIDForPN(ctx, entry.JID); lerr == nil && lid.User != "" {
+	if lid, lerr := waClient.Store.LIDs.GetLIDForPN(ctx, entry.JID); lerr != nil {
+		log.Printf("[BRIDGE] resolve-lid: GetLIDForPN(%s) error: %v", entry.JID.String(), lerr)
+	} else if lid.User != "" {
 		lidStr = lid.String()
 	}
+	// An empty lid here means WhatsApp confirms the number but doesn't expose its
+	// LID to us yet — the caller logs lid_unresolved and inbound stays gated.
+	log.Printf("[BRIDGE] resolve-lid: pn=%s lid=%q", entry.JID.String(), lidStr)
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":  true,
 		"pn":  entry.JID.String(),
