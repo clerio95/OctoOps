@@ -169,6 +169,45 @@ def main(argv: list[str] | None = None) -> int:
         lock.release()
 
 
+def _disable_windows_quickedit() -> None:
+    """Turn off console QuickEdit mode on Windows so the bot can't 'sleep'.
+
+    With QuickEdit on (the conhost default) any click/selection in the window
+    pauses every console write. Because logs are mirrored to the console inside
+    the asyncio event loop, that pause stalls the whole loop — Telegram stops
+    being answered until someone presses Enter to end the selection. Clearing
+    the flag keeps it responsive 24/7. No-op off Windows or with no real console
+    attached (e.g. headless under Task Scheduler), and never raises.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        # Declare signatures so the 64-bit HANDLE isn't truncated to 32 bits.
+        kernel32.GetStdHandle.restype = wintypes.HANDLE
+        kernel32.GetStdHandle.argtypes = [wintypes.DWORD]
+        kernel32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+
+        STD_INPUT_HANDLE = -10
+        ENABLE_EXTENDED_FLAGS = 0x0080
+        ENABLE_QUICK_EDIT_MODE = 0x0040
+
+        handle = kernel32.GetStdHandle(STD_INPUT_HANDLE)
+        if not handle:
+            return
+        mode = wintypes.DWORD()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return  # no console (redirected/headless) — nothing to disable
+        new_mode = (mode.value & ~ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS
+        kernel32.SetConsoleMode(handle, new_mode)
+    except Exception:  # noqa: BLE001 - a console tweak must never break startup
+        pass
+
+
 def _run(args: argparse.Namespace, config_path: Path, paths: AppPaths) -> int:
     """Setup (if needed), load config, configure logging, and serve."""
     if args.setup or not config_path.is_file():
@@ -229,6 +268,9 @@ def _run(args: argparse.Namespace, config_path: Path, paths: AppPaths) -> int:
     except OctoOpsError as exc:
         log.error("bootstrap.failed", error=str(exc))
         return 1
+
+    # Keep an interactive Windows console from freezing the loop on a stray click.
+    _disable_windows_quickedit()
 
     try:
         asyncio.run(_serve(runtime))
