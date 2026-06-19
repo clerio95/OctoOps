@@ -13,17 +13,26 @@ from octoops.wizard.pairing import wait_for_login
 
 
 def test_build_task_xml_contents():
-    xml = ts.build_task_xml(r"C:\octoops\.venv\Scripts\python.exe", "-m octoops", r"C:\octoops")
-    assert "<BootTrigger>" in xml
-    assert "S-1-5-18" in xml  # SYSTEM
+    xml = ts.build_task_xml(
+        r"C:\octoops\run.bat", "", r"C:\octoops", r"PST-ZAM-04\Usuario"
+    )
+    assert "<LogonTrigger>" in xml
+    assert "S-1-5-18" not in xml  # not SYSTEM
+    assert "<LogonType>InteractiveToken</LogonType>" in xml
+    assert r"PST-ZAM-04\Usuario" in xml  # runs as the logged-in user
     assert "<Count>10</Count>" in xml and "PT1M" in xml  # restart 10x / 1 min
-    assert "-m octoops" in xml
     assert r"C:\octoops" in xml
 
 
 def test_xml_escapes_special_chars():
-    xml = ts.build_task_xml("py & q", "-m octoops <x>", "dir")
+    xml = ts.build_task_xml("py & q", "-m octoops <x>", "dir", "dom\\user")
     assert "&amp;" in xml and "&lt;x&gt;" in xml
+
+
+def test_run_bat_self_restart_loop(tmp_path, monkeypatch):
+    monkeypatch.setattr(ts, "is_windows", lambda: True)
+    content = ts.write_run_bat(tmp_path, r"C:\Python\python.exe").read_text()
+    assert ":loop" in content and "goto loop" in content
 
 
 def test_register_task_noop_off_windows(monkeypatch):
